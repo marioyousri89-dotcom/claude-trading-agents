@@ -147,6 +147,18 @@ class ConfigTests(unittest.TestCase):
         with self.assertRaises(GateError):
             parse_allowlist("octocat")
 
+    def test_windows_session_file_must_be_in_profile(self):
+        from auth_gate import config
+        outside = str(Path(tempfile.gettempdir()).resolve().parent / "shared" / "session.json")
+        env = {"TRADING_GATE_ALLOWED": "github:octocat", "TRADING_GATE_SESSION_FILE": outside}
+        with mock.patch.dict(os.environ, env), mock.patch.object(config, "WINDOWS", True), \
+                mock.patch.object(config.Path, "home", return_value=Path(tempfile.gettempdir()) / "home"):
+            with self.assertRaisesRegex(GateError, "user profile"):
+                Config.from_env()
+        with mock.patch.dict(os.environ, {**env, "TRADING_GATE_SESSION_FILE": "~/x/session.json"}), \
+                mock.patch.object(config, "WINDOWS", True):
+            self.assertEqual(Config.from_env().session_path, Path("~/x/session.json"))
+
     def test_empty_allowlist_fails_closed(self):
         with mock.patch.dict(os.environ, {"TRADING_GATE_ALLOWED": ""}):
             with self.assertRaisesRegex(GateError, "empty"):

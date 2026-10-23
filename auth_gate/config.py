@@ -7,11 +7,16 @@ from .providers import GitHubProvider, GoogleProvider, Provider
 
 PROVIDERS = ("github", "google")
 DEFAULT_TTL_HOURS = 12
+WINDOWS = os.name == "nt"
 
 
 def _default_session_path() -> Path:
     base = os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config"
     return Path(base) / "claude-trading-agents" / "session.json"
+
+
+def _inside_home(path: Path) -> bool:
+    return path.expanduser().resolve().is_relative_to(Path.home().resolve())
 
 
 def parse_allowlist(raw: str) -> frozenset[str]:
@@ -49,6 +54,10 @@ class Config:
         if ttl_hours <= 0:
             raise GateError("TRADING_GATE_SESSION_HOURS must be positive")
         path = os.environ.get("TRADING_GATE_SESSION_FILE")
+        if path and WINDOWS and not _inside_home(Path(path)):
+            # POSIX permission checks don't apply on Windows; the user profile
+            # is private by default, so keep the token inside it.
+            raise GateError("On Windows, TRADING_GATE_SESSION_FILE must be inside your user profile folder")
         return cls(
             allowed=allowed,
             session_path=Path(path) if path else _default_session_path(),
