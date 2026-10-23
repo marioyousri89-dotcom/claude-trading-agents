@@ -64,3 +64,6 @@ is not a terminal (cron, CI), it never prompts. It fails unless a valid session 
 ```sh
 python -m unittest discover -s tests -t .
 ```
+
+CI runs this as a matrix build (`.github/workflows/tests.yml`) on Linux, macOS and Windows with
+Python 3.10–3.14, for every pull request and every push to `main`.

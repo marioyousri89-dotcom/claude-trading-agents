@@ -9,6 +9,8 @@ from auth_gate import Config, GateError, gate, session
 from auth_gate.config import parse_allowlist
 from auth_gate.providers import DeviceCode, Identity, Provider
 
+POSIX = os.name == "posix"
+
 
 class FakeProvider(Provider):
     name = "github"
@@ -51,7 +53,8 @@ class GateTests(unittest.TestCase):
     def test_login_then_verify(self):
         identity = gate.login(self.config, "github", out=lambda *_: None)
         self.assertEqual(identity.subject, "github:octocat")
-        self.assertEqual(os.stat(self.path).st_mode & 0o777, 0o600)
+        if POSIX:
+            self.assertEqual(os.stat(self.path).st_mode & 0o777, 0o600)
         self.assertEqual(gate.verify(self.config), identity)
 
     def test_device_flow_handles_pending_and_slow_down(self):
@@ -103,6 +106,7 @@ class GateTests(unittest.TestCase):
         with self.assertRaisesRegex(GateError, "Not signed in"):
             gate.require_login(self.config, interactive=False)
 
+    @unittest.skipUnless(POSIX, "Unix file permissions only")
     def test_world_readable_session_file_is_refused(self):
         gate.login(self.config, "github", out=lambda *_: None)
         os.chmod(self.path, 0o644)

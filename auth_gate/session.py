@@ -28,7 +28,8 @@ def save(path: Path, session: Session) -> None:
     tmp = path.with_suffix(".tmp")
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     try:
-        os.fchmod(fd, 0o600)
+        if hasattr(os, "fchmod"):
+            os.fchmod(fd, 0o600)
         os.write(fd, json.dumps(asdict(session)).encode())
     finally:
         os.close(fd)
