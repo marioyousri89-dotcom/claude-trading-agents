@@ -3,7 +3,8 @@
 Endpoints:
   /             live log page
   /events       Server-Sent Events stream of new events
-  /api/state    latest tick, leaderboard and agent count per shard (JSON)
+  /api/state    latest tick, leaderboard, agent count per shard, ring heatmap
+                and the Jev decision desk totals (JSON)
   /health       200 once at least one shard is reporting
 """
 
@@ -23,7 +24,7 @@ class EventHub:
         self.events_dir = events_dir
         self.events: deque[tuple[int, dict]] = deque(maxlen=HISTORY)
         self.seq = 0
-        self.shards: dict[int, dict] = {}
+        self.shards: dict[str, dict] = {}
         self.cond = threading.Condition()
         self.offsets: dict[Path, int] = {}
 
@@ -47,9 +48,9 @@ class EventHub:
         with self.cond:
             self.seq += 1
             self.events.append((self.seq, event))
-            shard = self.shards.setdefault(event.get("shard", -1), {})
+            shard = self.shards.setdefault(str(event.get("shard", "?")), {})
             kind = event.get("type")
-            if kind in ("start", "tick", "leaderboard", "stop"):
+            if kind in ("start", "tick", "leaderboard", "stop", "heatmap"):
                 shard[kind] = event
             self.cond.notify_all()
 
@@ -61,9 +62,17 @@ class EventHub:
 
     def state(self) -> dict:
         with self.cond:
-            shards = {str(k): v for k, v in sorted(self.shards.items())}
-            total = sum(v["start"]["agents"] for v in self.shards.values() if "start" in v)
-            return {"shards": shards, "agents_reporting": total, "events_seen": self.seq}
+            shards = dict(sorted(self.shards.items()))
+            total = sum(v["start"].get("agents", 0) for v in shards.values() if "start" in v)
+            ticks = [v["tick"] for v in shards.values() if "tick" in v]
+            approved = sum(t.get("jev", {}).get("approved", 0) for t in ticks)
+            rejected = sum(t.get("jev", {}).get("rejected", 0) for t in ticks)
+            heatmap = shards.get("ring", {}).get("heatmap", {}).get("bots", {})
+            desk = {"approved": approved, "rejected": rejected,
+                    "approval_rate": round(approved / (approved + rejected), 4) if approved + rejected else None,
+                    "session_pnl": round(sum(t.get("pnl", 0) for t in ticks), 2)}
+            return {"shards": shards, "agents_reporting": total, "events_seen": self.seq,
+                    "heatmap": heatmap, "jev_desk": desk}
 
     def run_tailer(self, interval: float = 0.25) -> None:
         while True:
@@ -84,24 +93,38 @@ header{padding:12px 16px;border-bottom:1px solid #222}
 #shards{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;padding:12px 16px}
 .card{background:var(--card);padding:10px;border-radius:6px}
 .mut{color:var(--mut)}.up{color:var(--up)}.dn{color:var(--dn)}
+#hud{display:grid;grid-template-columns:2fr 1fr;gap:8px;padding:0 16px 12px}
+@media (max-width:700px){#hud{grid-template-columns:1fr}}
+#heat{display:grid;grid-template-columns:repeat(4,1fr);gap:4px}
+.cell{padding:8px 4px;border-radius:4px;text-align:center;font-size:12px}
 #log{padding:0 16px 16px;white-space:pre-wrap;word-break:break-all}
 #log div{border-bottom:1px solid #1d2028;padding:2px 0}
 </style></head><body>
 <header><b>Trading Agents</b> <span class="mut">paper mode · <span id="total">0</span> agents reporting</span></header>
-<div id="shards"></div><div id="log"></div>
+<div id="shards"></div>
+<div id="hud"><div class="card"><b>Signal heatmap</b> <span class="mut">8-bot ring</span><div id="heat"></div></div>
+<div class="card"><b>Jev decision desk</b><div id="desk" class="mut">waiting…</div></div></div>
+<div id="log"></div>
 <script>
-const log=document.getElementById('log'),shards={};
+const log=document.getElementById('log'),shards={};let heat={};
+function color(v){const a=Math.min(1,Math.abs(v));return v>=0?`rgba(63,185,80,${.15+a*.6})`:`rgba(248,81,73,${.15+a*.6})`}
+function renderHud(){document.getElementById('heat').innerHTML=Object.entries(heat).map(([b,v])=>
+ `<div class="cell" style="background:${color(v)}">${b.replace('_',' ')}<br><b>${v.toFixed(2)}</b></div>`).join('');
+ let ap=0,rj=0,pnl=0;for(const s of Object.values(shards)){ap+=s.jev?.approved||0;rj+=s.jev?.rejected||0;pnl+=s.pnl||0}
+ document.getElementById('desk').innerHTML=`requests ${ap+rj}<br><span class="up">approved ${ap}</span> · <span class="dn">rejected ${rj}</span><br>`+
+ `approval ${ap+rj?(100*ap/(ap+rj)).toFixed(1):'–'}%<br>session P&amp;L <span class="${pnl>=0?'up':'dn'}">${pnl.toFixed(2)}</span>`}
 function render(){const el=document.getElementById('shards');el.innerHTML='';let total=0;
  for(const [id,s] of Object.entries(shards)){total+=s.agents||0;const pnl=s.pnl||0;
-  el.insertAdjacentHTML('beforeend',`<div class="card"><b>shard ${id}</b> <span class="mut">${s.agents||0} agents</span><br>
+  el.insertAdjacentHTML('beforeend',`<div class="card"><b>${id==='ring'?'8-bot ring':'shard '+id}</b> <span class="mut">${id==='ring'?'polymarket + predictor':(s.agents||0)+' agents'}</span><br>
   tick ${s.tick||0} · equity ${(s.equity||0).toFixed(2)}<br><span class="${pnl>=0?'up':'dn'}">pnl ${pnl.toFixed(2)}</span>${s.halted?' <span class="dn">HALTED</span>':''}</div>`)}
- document.getElementById('total').textContent=total}
+ document.getElementById('total').textContent=total;renderHud()}
 fetch('/api/state').then(r=>r.json()).then(st=>{for(const [id,v] of Object.entries(st.shards)){
- const s=shards[id]=shards[id]||{};if(v.start)s.agents=v.start.agents;if(v.tick&&!s.tick)Object.assign(s,v.tick)}render()});
+ const s=shards[id]=shards[id]||{};if(v.start)s.agents=v.start.agents;if(v.tick&&!s.tick)Object.assign(s,v.tick)}heat=st.heatmap||{};render()});
 const es=new EventSource('/events');
 es.onmessage=m=>{const e=JSON.parse(m.data),s=shards[e.shard]=shards[e.shard]||{};
  if(e.type==='start')s.agents=e.agents;
- if(e.type==='tick'){Object.assign(s,{tick:e.tick,equity:e.equity,pnl:e.pnl,halted:e.halted});render();if(e.orders===0)return}
+ if(e.type==='heatmap'){heat=e.bots;renderHud();return}
+ if(e.type==='tick'){Object.assign(s,{tick:e.tick,equity:e.equity,pnl:e.pnl,halted:e.halted,jev:e.jev});render();if(e.orders===0)return}
  const d=document.createElement('div');d.textContent=new Date(e.ts*1000).toLocaleTimeString()+'  ['+e.shard+'] '+e.type+'  '+
   JSON.stringify(Object.fromEntries(Object.entries(e).filter(([k])=>!['ts','shard','type'].includes(k))));
  log.prepend(d);while(log.children.length>300)log.lastChild.remove()};
