@@ -1,5 +1,48 @@
 # claude-trading-agents
 
+A team of **750 paper-trading agents** running in several containers, with live logs, behind a login gate.
+
+## The agent team
+
+| Role | Count | What it does |
+|---|---|---|
+| Traders | 600 | Momentum, moving-average cross, breakout and mean-reversion strategies with varied look-back windows, spread across 10 symbols |
+| Analysts | 120 | Judge each symbol's regime (trending vs choppy) and decide whether the desk trusts trend-followers or mean-reversion traders |
+| Risk monitors | 30 | Watch volatility and vote to shrink overall exposure |
+
+A coordinator (`trading/desk.py`) combines the votes into one order per symbol. The hard limits in
+`trading/risk.py` have the final say: order size, position size, gross exposure, and a drawdown limit
+that halts new risk. Every agent keeps a virtual P&L, which feeds a leaderboard.
+
+**Paper mode only.** The market is simulated and fills are fake. No real orders are ever sent.
+
+## Running it
+
+```sh
+docker compose up --build        # 3 engine containers x 250 agents + dashboard
+docker compose logs -f           # live logs from every container
+open http://127.0.0.1:8080       # live dashboard (bound to localhost only)
+docker compose down -v
+```
+
+Settings (environment variables): `AGENT_COUNT` (default 750), `TICK_SECONDS` (0.5), `TICKS` (0 = run
+forever) and `PYTHON_VERSION` (base image, default 3.13).
+
+Without Docker, run a single process with all agents: `python -m trading.engine`. Run the gated
+version with `python run_agent.py`.
+
+## Matrix build (CI)
+
+`.github/workflows/tests.yml` runs on every pull request and every push to `main`:
+
+| Job | Matrix | What it checks |
+|---|---|---|
+| `test` | Linux, macOS, Windows × Python 3.10–3.14 (15 jobs) | Unit tests, including a full 750-agent run and a 3-shard dashboard test |
+| `containers` | Python 3.12 and 3.13 images | Builds and starts the full multi-container stack, then checks that all 750 agents report, every shard keeps ticking, and the live log stream reaches every shard. Container logs are printed at the end of each job. |
+
+GitHub's macOS and Windows runners can't run Linux containers, so container tests run on Linux. macOS
+and Windows cover the same engine through the unit tests.
+
 ## Login security gate
 
 Every script must pass the login gate before it runs. You sign in with **GitHub** or **Google** using

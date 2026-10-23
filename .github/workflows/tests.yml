@@ -24,3 +24,28 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: Run tests
         run: python -m unittest discover -s tests -t . -v
+
+  containers:
+    name: containers / Python ${{ matrix.python-version }} image
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
+    env:
+      PYTHON_VERSION: ${{ matrix.python-version }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build and start 3 engine shards + dashboard (750 agents)
+        run: docker compose up -d --build --wait
+      - name: Multi-container tests
+        run: python3 -m unittest tests.containers.test_stack -v
+        env:
+          DASHBOARD_URL: http://127.0.0.1:8080
+      - name: Container logs
+        if: always()
+        run: docker compose logs --no-color --timestamps --tail 200
+      - name: Tear down
+        if: always()
+        run: docker compose down -v

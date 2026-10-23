@@ -1,0 +1,50 @@
+# 750 agents split across 3 engine containers, plus a live-log dashboard.
+#   docker compose up --build          start everything
+#   docker compose logs -f             follow live logs from every container
+#   open http://127.0.0.1:8080         live dashboard
+
+x-engine: &engine
+  build:
+    context: .
+    args:
+      PYTHON_VERSION: ${PYTHON_VERSION:-3.13}
+  image: claude-trading-agents
+  restart: unless-stopped
+  volumes:
+    - events:/events
+  environment: &engine-env
+    AGENT_COUNT: ${AGENT_COUNT:-750}
+    SHARD_COUNT: 3
+    TICK_SECONDS: ${TICK_SECONDS:-0.5}
+    TICKS: ${TICKS:-0}
+
+services:
+  engine-0:
+    <<: *engine
+    environment: { <<: *engine-env, SHARD_ID: 0 }
+  engine-1:
+    <<: *engine
+    environment: { <<: *engine-env, SHARD_ID: 1 }
+  engine-2:
+    <<: *engine
+    environment: { <<: *engine-env, SHARD_ID: 2 }
+
+  dashboard:
+    image: claude-trading-agents
+    depends_on: [engine-0]
+    command: ["python", "-m", "trading.dashboard"]
+    restart: unless-stopped
+    environment:
+      DASHBOARD_HOST: 0.0.0.0
+    volumes:
+      - events:/events:ro
+    ports:
+      - "127.0.0.1:8080:8080"  # localhost only: the dashboard has no login
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health')"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  events:
