@@ -113,6 +113,22 @@ class GateTests(unittest.TestCase):
         with self.assertRaisesRegex(GateError, "readable by other users"):
             gate.verify(self.config)
 
+    @unittest.skipUnless(POSIX, "Unix file permissions only")
+    def test_shared_session_directory_is_refused(self):
+        os.chmod(self.tmp.name, 0o777)
+        with self.assertRaisesRegex(GateError, "writable by other users"):
+            gate.login(self.config, "github", out=lambda *_: None)
+
+    def test_save_leaves_no_temp_files(self):
+        gate.login(self.config, "github", out=lambda *_: None)
+        self.assertEqual(os.listdir(self.tmp.name), ["session.json"])
+
+    def test_network_error_becomes_gate_error(self):
+        from auth_gate import http
+        with mock.patch.object(http.urllib.request, "urlopen", side_effect=OSError("connection refused")):
+            with self.assertRaisesRegex(GateError, "Network error contacting example.test"):
+                http.get_json("https://example.test/user", "tok")
+
     def test_logout(self):
         gate.login(self.config, "github", out=lambda *_: None)
         self.assertTrue(gate.logout(self.config))

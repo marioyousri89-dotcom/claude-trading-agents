@@ -66,6 +66,7 @@ class RiskTests(unittest.TestCase):
         self.assertTrue(self.risk.halted)
         self.assertEqual(self.risk.approve("X", 10, crashed)[0], 0.0)
         self.assertEqual(self.risk.approve("X", -10, crashed)[0], -10)
+        self.assertEqual(self.risk.approve("X", -150, crashed), (-100, "halted: reduced to flatten"))
 
 
 class EngineTests(unittest.TestCase):

@@ -45,7 +45,7 @@ and Windows cover the same engine through the unit tests.
 
 ## Login security gate
 
-Every script must pass the login gate before it runs. You sign in with **GitHub** or **Google** using
+`run_agent.py`, and any script you add with `@login_required`, must pass the login gate before it runs. Paper-mode Docker containers (`python -m trading.engine`) and the localhost-only dashboard run without the gate, because they can't place real orders. Any future live-trading path must go through the gate. You sign in with **GitHub** or **Google** using
 the OAuth *device flow*: the CLI prints a short code, you approve it in any browser, and no local web
 server or redirect URL is needed. The gate depends only on the Python standard library (3.10+).
 

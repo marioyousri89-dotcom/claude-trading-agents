@@ -9,7 +9,7 @@ x-engine: &engine
     args:
       PYTHON_VERSION: ${PYTHON_VERSION:-3.13}
   image: claude-trading-agents
-  restart: unless-stopped
+  restart: on-failure  # a finished TICKS run exits 0 and stays stopped
   volumes:
     - events:/events
   environment: &engine-env

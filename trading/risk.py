@@ -32,8 +32,10 @@ class RiskManager:
         current = self.broker.position(symbol)
         if self.halted:
             # Once halted, only trades that reduce risk are allowed.
-            if current == 0 or (qty > 0) == (current > 0) or abs(qty) > abs(current):
+            if current == 0 or (qty > 0) == (current > 0):
                 return 0.0, "halted: max drawdown breached"
+            if abs(qty) > abs(current):
+                return -current, "halted: reduced to flatten"
             return qty, None
         reason = None
         max_order_qty = self.limits.max_order_value / price

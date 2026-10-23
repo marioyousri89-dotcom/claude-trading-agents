@@ -2,6 +2,7 @@
 
 import json
 import os
+import secrets
 import stat
 import time
 from dataclasses import asdict, dataclass
@@ -25,15 +26,19 @@ class Session:
 
 def save(path: Path, session: Session) -> None:
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    tmp = path.with_suffix(".tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    if os.name == "posix" and path.parent.stat().st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+        raise GateError(f"{path.parent} is writable by other users; choose a private directory")
+    # Unique name + O_EXCL + O_NOFOLLOW: a planted file or symlink can't capture the token.
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    tmp = path.with_name(f".{path.name}.{secrets.token_hex(16)}.tmp")
+    fd = os.open(tmp, flags, 0o600)
     try:
-        if hasattr(os, "fchmod"):
-            os.fchmod(fd, 0o600)
-        os.write(fd, json.dumps(asdict(session)).encode())
-    finally:
-        os.close(fd)
-    os.replace(tmp, path)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(asdict(session), f)
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def load(path: Path) -> Session | None:

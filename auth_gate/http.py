@@ -5,6 +5,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from .errors import GateError
+
 USER_AGENT = "claude-trading-agents-auth-gate"
 TIMEOUT = 15
 
@@ -17,6 +19,9 @@ def _send(request: urllib.request.Request) -> tuple[int, dict]:
         # OAuth servers report polling states (authorization_pending etc.)
         # as 4xx responses with a JSON body, so read it instead of failing.
         status, body = err.code, err.read()
+    except OSError as err:  # DNS failure, refused connection, timeout
+        host = urllib.parse.urlsplit(request.full_url).netloc
+        raise GateError(f"Network error contacting {host}: {err}") from None
     try:
         data = json.loads(body or b"{}")
     except ValueError:
