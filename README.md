@@ -59,7 +59,8 @@ server or redirect URL is needed. The gate depends only on the Python standard l
   session is capped at the token's own lifetime (about 1 hour).
 - **Owner-only session file.** `~/.config/claude-trading-agents/session.json` is created with mode
   `0600`. The gate refuses it if anyone else can read it or if another user owns it.
-- **Windows:** a custom `TRADING_GATE_SESSION_FILE` must be inside your user profile folder, because
+- **Windows:** the session file (including one set with `TRADING_GATE_SESSION_FILE` or `XDG_CONFIG_HOME`)
+  must be inside your user profile folder, because
   the Unix permission checks don't apply there.
 - **Fails closed.** Network errors, unverified Google emails and bad configuration all deny access.
 - **Logout revokes the token** where the provider supports it (Google).

@@ -16,7 +16,7 @@ def _default_session_path() -> Path:
 
 
 def _inside_home(path: Path) -> bool:
-    return path.expanduser().resolve().is_relative_to(Path.home().resolve())
+    return path.is_relative_to(Path.home().resolve())
 
 
 def parse_allowlist(raw: str) -> frozenset[str]:
@@ -54,13 +54,14 @@ class Config:
         if ttl_hours <= 0:
             raise GateError("TRADING_GATE_SESSION_HOURS must be positive")
         path = os.environ.get("TRADING_GATE_SESSION_FILE")
-        if path and WINDOWS and not _inside_home(Path(path)):
+        session_path = (Path(path) if path else _default_session_path()).expanduser().resolve()
+        if WINDOWS and not _inside_home(session_path):
             # POSIX permission checks don't apply on Windows; the user profile
             # is private by default, so keep the token inside it.
-            raise GateError("On Windows, TRADING_GATE_SESSION_FILE must be inside your user profile folder")
+            raise GateError("On Windows, the session file must be inside your user profile folder")
         return cls(
             allowed=allowed,
-            session_path=Path(path) if path else _default_session_path(),
+            session_path=session_path,
             session_ttl=int(ttl_hours * 3600),
             github_client_id=os.environ.get("GITHUB_CLIENT_ID", ""),
             google_client_id=os.environ.get("GOOGLE_CLIENT_ID", ""),

@@ -157,7 +157,7 @@ class ConfigTests(unittest.TestCase):
                 Config.from_env()
         with mock.patch.dict(os.environ, {**env, "TRADING_GATE_SESSION_FILE": "~/x/session.json"}), \
                 mock.patch.object(config, "WINDOWS", True):
-            self.assertEqual(Config.from_env().session_path, Path("~/x/session.json"))
+            self.assertEqual(Config.from_env().session_path, (Path.home() / "x" / "session.json").resolve())
 
     def test_empty_allowlist_fails_closed(self):
         with mock.patch.dict(os.environ, {"TRADING_GATE_ALLOWED": ""}):
