@@ -9,6 +9,9 @@ Configured with environment variables so the same image runs as any shard:
   TICK_SECONDS  delay between ticks (default 0.5)
   EVENTS_DIR    directory for the shard's events-<id>.jsonl (optional)
   SEED          market/agent seed (default 42)
+  ATS_CONFIG    risk/brain config file (default config/ats_matrix.json)
+  LEARNING_INTERVAL_SECONDS  override the config's self-adaptive learning interval
+  MODE          only "paper" is implemented
 """
 
 import os
@@ -17,7 +20,9 @@ import sys
 import time
 from pathlib import Path
 
+from . import config as ats_config
 from .agents import build_team
+from .brains import BrainAlpha, BrainBeta
 from .broker import PaperBroker
 from .desk import Desk
 from .events import EventLog
@@ -34,6 +39,10 @@ def shard_agents(agent_count: int, symbols: list[str], shard_id: int, shard_coun
 
 
 def run(env=os.environ, stream=None) -> Desk:
+    from .ring import require_paper
+
+    require_paper(env.get("MODE", "paper"))
+    cfg = ats_config.load(env.get("ATS_CONFIG"))
     agent_count = int(env.get("AGENT_COUNT", 750))
     shard_id = int(env.get("SHARD_ID", 0))
     shard_count = int(env.get("SHARD_COUNT", 1))
@@ -46,7 +55,11 @@ def run(env=os.environ, stream=None) -> Desk:
     agents = shard_agents(agent_count, symbols, shard_id, shard_count, seed)
     log = EventLog(shard_id, Path(events_dir) / f"events-{shard_id}.jsonl" if events_dir else None, stream)
     broker = PaperBroker()
-    desk = Desk(agents, broker, RiskManager(RiskLimits(), broker), log)
+    interval = env.get("LEARNING_INTERVAL_SECONDS")
+    alpha = BrainAlpha(["trend", "reversion"], float(interval) if interval else cfg.beta.learning_interval_seconds,
+                       cfg.beta.learning_enabled)
+    limits = RiskLimits(max_drawdown=cfg.risk.max_drawdown)
+    desk = Desk(agents, broker, RiskManager(limits, broker), log, beta=BrainBeta(cfg), alpha=alpha)
     # Every shard sees the same market (same seed), but trades its own agents.
     market = SimulatedMarket(symbols, seed=seed)
 
@@ -54,7 +67,8 @@ def run(env=os.environ, stream=None) -> Desk:
     for a in agents:
         roles[a.role] = roles.get(a.role, 0) + 1
     log.emit("start", agents=len(agents), total_agents=agent_count, shard_count=shard_count,
-             roles=roles, symbols=symbols, mode="paper")
+             roles=roles, symbols=symbols, mode="paper", config_version=cfg.version,
+             learning_interval_seconds=alpha.interval)
 
     stopping = False
 

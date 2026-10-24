@@ -1,0 +1,36 @@
+{
+    "system_metadata": {
+        "project": "ATS Matrix Dual-Brain System",
+        "version": "2.0.0",
+        "last_updated_utc": "2026-10-24T07:44:00Z"
+    },
+    "brain_beta_configuration": {
+        "execution_loop_target_seconds": 1.5,
+        "max_categorical_paths": 255,
+        "autopilot_24_7": true,
+        "self_adaptive_learning": {
+            "enabled": true,
+            "interval_hours": 1
+        }
+    },
+    "risk_gate_limits": {
+        "global_max_drawdown_percent": 5.0,
+        "max_trade_size_usdc": 100000.0,
+        "slippage_tolerance_percent": 0.5,
+        "polymarket_min_liquidity_depth_2pct_usdc": 50000.0,
+        "oracle_dispute_buffer_percent": 3.0
+    },
+    "polymarket_fee_constants": {
+        "crypto_category_rate": 0.07,
+        "sports_category_rate": 0.05,
+        "politics_finance_category_rate": 0.0624
+    },
+    "strategy_activation_thresholds": {
+        "negative_risk_squeeze_epsilon": 0.04,
+        "cross_book_arbitrage_min_spread_usdc": 0.01,
+        "maker_rebate_hunting_price_band": {
+            "min_usd": 0.4,
+            "max_usd": 0.6
+        }
+    }
+}

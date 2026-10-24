@@ -6,6 +6,7 @@ WORKDIR /app
 RUN useradd --create-home --uid 10001 agent && mkdir /events && chown agent /events
 COPY auth_gate ./auth_gate
 COPY trading ./trading
+COPY config ./config
 USER agent
 
 ENV EVENTS_DIR=/events

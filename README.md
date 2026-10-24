@@ -16,10 +16,45 @@ that halts new risk. Every agent keeps a virtual P&L, which feeds a leaderboard.
 
 **Paper mode only.** The market is simulated and fills are fake. No real orders are ever sent.
 
+## ATS Matrix V2: Dual-Brain and the 8-bot ring
+
+This implements the ATS Matrix V2 blueprint in paper mode. Risk limits, thresholds and fee constants come
+from `config/ats_matrix.json`, which is validated at startup (a bad value stops the system before it
+trades).
+
+| Blueprint | Code |
+|---|---|
+| **Brain Alpha** (planner) | `trading/brains.py`: the self-adaptive learning loop, every `interval_hours` (1h). It reweights strategies by the P&L each made since the last update. Weights are bounded so nothing is switched fully off. In the engines it learns how much to trust trend vs mean-reversion traders. In the ring it allocates between the four strategies. |
+| **Brain Beta** (reactive) | Times every loop against `execution_loop_target_seconds` (1.5s) and resets Jev's per-loop path budget (`max_categorical_paths`, 255). |
+| **Jev** (typed-JSON gate) | `trading/jev.py`: every proposal from every bot must match a fixed contract. That means exact fields and types, finite positive values, the $100k trade cap, 0.5% slippage tolerance and $50k Polymarket depth. Only trading bots may propose. Rejections carry reason codes. |
+| **Watcher** | Reads the simulated Polymarket books and token launchpad |
+| **Analyst** | The 750-agent engine shards (spot markets) |
+| **Risk Gate** | 5% global drawdown halt: after a breach, only exits are allowed |
+| **Executor** | Sends every leg through Jev. A multi-leg trade executes only if every leg is approved. |
+| **Reporter** | JSON event stream, signal heatmap, Jev desk |
+| **Vault** | `trading/vault.py`: secrets only from environment variables, never logged, and locked in paper mode |
+| **Crypto Predictor** | `trading/predictor.py`: scores new token pools (liquidity, holder growth, volume velocity, dev-wallet share), skips rug risk, and exits in chunks under the slippage limit |
+| **Polymarket bot** | `trading/polymarket.py`: negative-risk squeeze (ε = 0.04), cross-book arbitrage (min spread $0.01) and maker-rebate hunting (0.40–0.60 band). Arbitrage must clear fees, slippage and the 3% oracle-dispute buffer. |
+| **HUD** | The dashboard shows the 8-bot signal heatmap and the Jev decision desk (requests, approval rate, session P&L) |
+
+**Assumptions** (the config gives rates, not formulas; all are documented in `trading/polymarket.py`):
+- The taker fee per share is `rate × p × (1 − p)`.
+- Makers earn 25% of the taker fee as a rebate.
+- Expected slippage is notional ÷ 2%-depth.
+
+**Not built:**
+- Live execution on Solana or Polymarket
+- The GPU cluster
+- Grok
+- The ImGui/WASM HUD
+
+`MODE=live` is refused, and any live path must go through the login gate. The simulated P&L shows the
+plumbing works. It is **not** evidence that the strategies would make money.
+
 ## Running it
 
 ```sh
-docker compose up --build        # 3 engine containers x 250 agents + dashboard
+docker compose up --build        # 3 engines x 250 agents + 8-bot ring + dashboard
 docker compose logs -f           # live logs from every container
 open http://127.0.0.1:8080       # live dashboard (bound to localhost only)
 docker compose down -v
@@ -38,7 +73,7 @@ version with `python run_agent.py`.
 | Job | Matrix | What it checks |
 |---|---|---|
 | `test` | Linux, macOS, Windows × Python 3.10–3.14 (15 jobs) | Unit tests, including a full 750-agent run and a 3-shard dashboard test |
-| `containers` | Python 3.12 and 3.13 images | Builds and starts the full multi-container stack, then checks that all 750 agents report, every shard keeps ticking, and the live log stream reaches every shard. Container logs are printed at the end of each job. |
+| `containers` | Python 3.12 and 3.13 images | Builds and starts all 5 containers, then checks that all 750 agents report, every shard and the ring keep ticking, the live log stream reaches all of them, and the heatmap and Jev desk are populated. Container logs are printed at the end of each job. |
 
 GitHub's macOS and Windows runners can't run Linux containers, so container tests run on Linux. macOS
 and Windows cover the same engine through the unit tests.

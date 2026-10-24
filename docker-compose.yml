@@ -1,4 +1,6 @@
-# 750 agents split across 3 engine containers, plus a live-log dashboard.
+# ATS Matrix V2 (paper mode): 750 agents split across 3 engine containers, the
+# 8-bot ring (Polymarket + Crypto Predictor) in its own container, and a
+# live-log dashboard with the signal heatmap and Jev decision desk.
 #   docker compose up --build          start everything
 #   docker compose logs -f             follow live logs from every container
 #   open http://127.0.0.1:8080         live dashboard
@@ -17,6 +19,7 @@ x-engine: &engine
     SHARD_COUNT: 3
     TICK_SECONDS: ${TICK_SECONDS:-0.5}
     TICKS: ${TICKS:-0}
+    LEARNING_INTERVAL_SECONDS: ${LEARNING_INTERVAL_SECONDS:-}
 
 services:
   engine-0:
@@ -28,6 +31,18 @@ services:
   engine-2:
     <<: *engine
     environment: { <<: *engine-env, SHARD_ID: 2 }
+
+  ring:
+    image: claude-trading-agents
+    depends_on: [engine-0]
+    command: ["python", "-m", "trading.ring"]
+    restart: on-failure
+    volumes:
+      - events:/events
+    environment:
+      TICK_SECONDS: ${RING_TICK_SECONDS:-1.0}
+      TICKS: ${TICKS:-0}
+      LEARNING_INTERVAL_SECONDS: ${LEARNING_INTERVAL_SECONDS:-}
 
   dashboard:
     image: claude-trading-agents
