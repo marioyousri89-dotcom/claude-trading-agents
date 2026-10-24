@@ -1,0 +1,6 @@
+.git
+.github
+.env
+events
+tests
+**/__pycache__
