@@ -26,18 +26,22 @@ class EventHub:
         self.seq = 0
         self.shards: dict[str, dict] = {}
         self.cond = threading.Condition()
-        self.offsets: dict[Path, int] = {}
+        self.offsets: dict[Path, tuple[int, int]] = {}  # path -> (inode, offset)
 
     def poll_files(self) -> None:
         for path in sorted(self.events_dir.glob("events-*.jsonl")):
-            offset = self.offsets.get(path, 0)
             with open(path, "rb") as f:
+                st = os.fstat(f.fileno())
+                inode, offset = self.offsets.get(path, (st.st_ino, 0))
+                if inode != st.st_ino or st.st_size < offset:
+                    offset = 0  # the engine rotated the file: start the new one from the top
                 f.seek(offset)
                 chunk = f.read()
             end = chunk.rfind(b"\n") + 1  # only consume complete lines
             if not end:
+                self.offsets[path] = (st.st_ino, offset)
                 continue
-            self.offsets[path] = offset + end
+            self.offsets[path] = (st.st_ino, offset + end)
             for line in chunk[:end].splitlines():
                 try:
                     self.add(json.loads(line))
