@@ -59,6 +59,7 @@ services:
     restart: unless-stopped
     environment:
       DASHBOARD_HOST: 0.0.0.0
+      DASHBOARD_AUTH: "off"  # safe only because the port is bound to localhost below
     volumes:
       - events:/events:ro
     ports:

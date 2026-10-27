@@ -1,0 +1,19 @@
+# Render Blueprint: deploys the whole ATS Matrix system (paper mode) as one
+# always-on web service, rebuilt automatically on every merge to main.
+# Render generates DASHBOARD_PASSWORD; find it under the service's Environment tab.
+services:
+  - type: web
+    name: ats-matrix
+    runtime: docker
+    plan: starter
+    branch: main
+    autoDeploy: true
+    dockerCommand: python -m trading.cloud
+    healthCheckPath: /health
+    envVars:
+      - key: DASHBOARD_PASSWORD
+        generateValue: true
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: EVENTS_DIR
+        value: /events
