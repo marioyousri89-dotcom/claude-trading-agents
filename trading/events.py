@@ -2,7 +2,8 @@
 
 The file rotates at EVENTS_MAX_MB (default 50): the current file is renamed to
 <name>.1 (replacing any older one) and a fresh file is started, so a 24/7 run
-uses at most about twice that per shard.
+uses at most about twice that per shard. The shard's "start" event is copied to
+the top of every new file, so a reader that starts late still sees it.
 """
 
 import json
@@ -20,6 +21,7 @@ class EventLog:
         self.max_bytes = max_bytes if max_bytes is not None else int(float(os.environ.get("EVENTS_MAX_MB", 50)) * 1e6)
         self.file = None
         self.size = 0
+        self._start_line: str | None = None
         if path is not None:
             path.parent.mkdir(parents=True, exist_ok=True)
             self.file = open(path, "a", buffering=1, encoding="utf-8")
@@ -30,10 +32,15 @@ class EventLog:
         os.replace(self.path, self.path.with_name(self.path.name + ".1"))
         self.file = open(self.path, "a", buffering=1, encoding="utf-8")
         self.size = 0
+        if self._start_line:
+            self.file.write(self._start_line + "\n")
+            self.size = len(self._start_line.encode()) + 1
 
     def emit(self, event_type: str, **fields) -> dict:
         event = {"ts": round(time.time(), 3), "shard": self.shard, "type": event_type, **fields}
         line = json.dumps(event, separators=(",", ":"))
+        if event_type == "start":
+            self._start_line = line
         if self.stream:
             print(line, file=self.stream, flush=True)
         if self.file:
