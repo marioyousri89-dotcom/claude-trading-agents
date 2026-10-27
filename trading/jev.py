@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from .config import ATSConfig
 
 RING_BOTS = ("watcher", "analyst", "risk_gate", "executor", "reporter", "vault", "crypto_predictor", "polymarket")
-TRADING_BOTS = {"analyst", "crypto_predictor", "polymarket"}  # only these may propose trades
+TRADING_BOTS = {"analyst", "crypto_predictor", "polymarket", "matrix"}  # only these may propose trades
 VENUES = {"spot", "polymarket", "dex"}
 SIDES = {"buy", "sell"}
 

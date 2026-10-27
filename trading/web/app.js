@@ -3,6 +3,7 @@
 const $ = (id) => document.getElementById(id);
 const shards = {};
 let heat = {};
+let matrixSnap = null;
 
 function el(tag, cls, text) {
   const n = document.createElement(tag);
@@ -50,8 +51,9 @@ function render() {
     total += s.agents || 0;
     const card = el('div', 'card');
     const title = el('div');
-    title.append(el('b', '', id === 'ring' ? '8-bot ring' : `shard ${id}`), ' ',
-      el('span', 'mut', id === 'ring' ? 'polymarket + predictor' : `${s.agents || 0} agents`));
+    const names = { ring: ['8-bot ring', 'polymarket + predictor'], matrix: ['Whole Matrix', '4 fused strategies'] };
+    const [name, sub] = names[id] || [`shard ${id}`, `${s.agents || 0} agents`];
+    title.append(el('b', '', name), ' ', el('span', 'mut', sub));
     const pnl = s.pnl || 0;
     const line = el('div', pnl >= 0 ? 'up' : 'dn', `pnl ${money(pnl)}`);
     if (s.halted) line.append(' ', el('span', 'dn', 'HALTED'));
@@ -60,6 +62,32 @@ function render() {
   }));
   $('total').textContent = total;
   renderHud();
+}
+
+const ARROW = { 1: '▲', '-1': '▼', 0: '·' };
+
+function renderMatrix() {
+  if (!matrixSnap) return;
+  $('matrixpanel').hidden = false;
+  const w = matrixSnap.weights || {};
+  $('matrixsub').textContent = `${matrixSnap.stormy ? 'stormy' : 'calm'} market · weights trend ${w.trend_confluence ?? '–'} / arb ${w.stat_arb ?? '–'}`;
+  const head = el('tr');
+  for (const h of ['asset', 'regime', '1m', '15m', '1h', '1d', 'position $']) head.append(el('th', '', h));
+  const rows = Object.entries(matrixSnap.assets).map(([asset, v]) => {
+    const tr = el('tr');
+    tr.append(el('td', '', asset), el('td', (v.regime || '').endsWith('trending') ? 'up' : 'mut', (v.regime || 'learning…').replaceAll('_', ' ')));
+    for (const tf of ['1m', '15m', '1h', '1d']) {
+      const m = v.mtf[tf];
+      tr.append(el('td', m > 0 ? 'up' : m < 0 ? 'dn' : 'mut', ARROW[m]));
+    }
+    tr.append(el('td', v.position_usd > 0 ? 'up' : v.position_usd < 0 ? 'dn' : 'mut', money(v.position_usd)));
+    return tr;
+  });
+  $('mtable').replaceChildren(head, ...rows);
+  $('pairs').replaceChildren(...Object.entries(matrixSnap.pairs).map(([pair, p]) => {
+    const side = p.side > 0 ? 'long spread' : p.side < 0 ? 'short spread' : 'flat';
+    return el('div', p.side ? 'up' : 'mut', `${pair}  z ${p.z ?? '–'}  ${side}`);
+  }));
 }
 
 function toLogin(resp) {
@@ -74,7 +102,9 @@ fetch('/api/state', { credentials: 'same-origin' }).then(toLogin).then((r) => r.
     if (v.tick && !s.tick) Object.assign(s, v.tick);
   }
   heat = st.heatmap || {};
+  matrixSnap = st.shards.matrix?.matrix || null;
   render();
+  renderMatrix();
 }).catch(() => {});
 
 function connect() {
@@ -85,6 +115,7 @@ function connect() {
     const s = shards[e.shard] = shards[e.shard] || {};
     if (e.type === 'start') s.agents = e.agents;
     if (e.type === 'heatmap') { heat = e.bots; renderHud(); return; }
+    if (e.type === 'matrix') { matrixSnap = e; renderMatrix(); return; }
     if (e.type === 'tick') {
       Object.assign(s, { tick: e.tick, equity: e.equity, pnl: e.pnl, halted: e.halted, jev: e.jev });
       render();

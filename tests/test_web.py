@@ -208,7 +208,7 @@ class SupervisorTests(unittest.TestCase):
 
     def test_builds_three_shards_and_ring(self):
         children = cloud.build_children({"AGENT_COUNT": "750"})
-        self.assertEqual([c.name for c in children], ["engine-0", "engine-1", "engine-2", "ring"])
+        self.assertEqual([c.name for c in children], ["engine-0", "engine-1", "engine-2", "ring", "matrix"])
         self.assertEqual({c.env["SHARD_COUNT"] for c in children}, {"3"})
         self.assertEqual([c.env.get("SHARD_ID") for c in children[:3]], ["0", "1", "2"])
 

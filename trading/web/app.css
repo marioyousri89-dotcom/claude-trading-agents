@@ -21,3 +21,10 @@ button{background:var(--card);color:var(--fg);border:1px solid #2a2f3a;border-ra
 .login input{width:100%;box-sizing:border-box;margin:12px 0;padding:10px;border-radius:6px;border:1px solid #2a2f3a;background:var(--card);color:var(--fg);font:inherit}
 .login button{width:100%;padding:10px}
 .err{color:var(--dn)}
+#matrixpanel{margin:0 16px 12px}
+#mtable{width:100%;border-collapse:collapse;margin-top:6px;font-size:12px}
+#mtable th,#mtable td{text-align:left;padding:3px 4px;border-bottom:1px solid #1d2028;white-space:nowrap}
+#mtable th{color:var(--mut);font-weight:normal}
+#pairs{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;font-size:12px}
+#pairs div{background:#11141a;padding:6px 8px;border-radius:4px}
+.tbl-wrap{overflow-x:auto}

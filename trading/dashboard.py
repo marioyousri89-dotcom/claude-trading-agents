@@ -95,7 +95,7 @@ class EventHub:
             self.events.append((self.seq, event))
             shard = self.shards.setdefault(str(event.get("shard", "?")), {})
             kind = event.get("type")
-            if kind in ("start", "tick", "leaderboard", "stop", "heatmap"):
+            if kind in ("start", "tick", "leaderboard", "stop", "heatmap", "matrix"):
                 shard[kind] = event
             self.cond.notify_all()
 

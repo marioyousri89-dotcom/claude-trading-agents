@@ -58,6 +58,22 @@ container logs are capped at 3 × 20 MB per container, so a 24/7 run can't fill 
 `MODE=live` is refused, and any live path must go through the login gate. The simulated P&L shows the
 plumbing works. It is **not** evidence that the strategies would make money.
 
+## Whole Matrix desk (paper mode)
+
+`trading/matrix.py` fuses four strategies into one decision, on a simulated cross-asset market
+(Gold, AUDUSD, Nasdaq, Bitcoin, Oil, USDCAD) with calm and stormy periods and trending and ranging phases.
+
+| Layer | What it does |
+|---|---|
+| **Multi-timeframe confluence** | EMA(8) vs EMA(21) on 1-minute, 15-minute, 1-hour and daily bars. A trend trade needs all four to agree. |
+| **Regime switching (ML)** | k-means clustering (`trading/regimes.py`) on volatility and trend-efficiency features labels each asset low or high volatility, and trending or ranging. Trend trades run only in trending regimes, high volatility halves size, and new pair trades pause when a leg is in a high-volatility trend. |
+| **Cross-asset stat arb** | Pairs Gold/AUDUSD, Nasdaq/Bitcoin and Oil/USDCAD. A rolling one-day hedge ratio and spread z-score: enter at 2, exit at 0.5, stop at 4. Both legs trade together, and negative hedge ratios are supported. |
+| **Confluence filter and news exits** | Strong contrary news suppresses a trade and exits an open one; mild contrary news shrinks it. **The news feed isn't connected yet** (it needs network access and API keys), so the live desk uses a neutral feed. The filter is fully tested with a stub feed. |
+
+Orders are sized to order-book depth (slippage within tolerance), then pass the risk limits and Jev.
+Brain Alpha re-weights trend vs arbitrage. The desk warms up on 21 simulated days at start (a few seconds)
+so the daily timeframe has data. One tick is one simulated minute.
+
 ## Run it in the cloud, with an app icon on your phone
 
 `render.yaml` deploys the whole system as one always-on service on [Render](https://render.com)
@@ -90,7 +106,7 @@ Changing `DASHBOARD_PASSWORD` or `SESSION_SECRET` in Render signs every device o
 ## Running it
 
 ```sh
-docker compose up --build        # 3 engines x 250 agents + 8-bot ring + dashboard
+docker compose up --build        # 3 engines x 250 agents + 8-bot ring + Whole Matrix + dashboard
 docker compose logs -f           # live logs from every container
 open http://127.0.0.1:8080       # live dashboard (bound to localhost only)
 docker compose down -v

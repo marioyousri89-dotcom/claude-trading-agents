@@ -1,6 +1,6 @@
 """Run the whole system in one container, for cloud hosts like Render.
 
-Starts the 3 engine shards (750 agents) and the 8-bot ring as child processes,
+Starts the 3 engine shards (750 agents), the 8-bot ring and the Whole Matrix desk as child processes,
 restarts any that crash (with backoff), and serves the dashboard in this
 process on $PORT with password login. Child output goes to stdout, so the
 host's log viewer shows the live JSON event stream.
@@ -91,6 +91,7 @@ def build_children(env: dict) -> list[Child]:
     children = [Child(f"engine-{i}", [sys.executable, "-m", "trading.engine"], {**base, "SHARD_ID": str(i)})
                 for i in range(SHARDS)]
     children.append(Child("ring", [sys.executable, "-m", "trading.ring"], dict(base)))
+    children.append(Child("matrix", [sys.executable, "-m", "trading.matrix"], dict(base)))
     return children
 
 
