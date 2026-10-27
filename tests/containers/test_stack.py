@@ -15,7 +15,7 @@ import urllib.request
 URL = os.environ.get("DASHBOARD_URL")
 SHARDS = int(os.environ.get("EXPECT_SHARDS", 3))
 AGENTS = int(os.environ.get("EXPECT_AGENTS", 750))
-EXPECTED = [str(i) for i in range(SHARDS)] + ["ring"]
+EXPECTED = [str(i) for i in range(SHARDS)] + ["matrix", "ring"]
 RING_BOTS = {"watcher", "analyst", "risk_gate", "executor", "reporter", "vault", "crypto_predictor", "polymarket"}
 
 
@@ -69,12 +69,22 @@ class StackTests(unittest.TestCase):
         self.assertTrue(ring["start"]["vault"]["locked"])
         self.assertEqual(ring["start"]["loop_target_seconds"], 1.5)
 
+    def test_whole_matrix_desk(self):
+        state = self.wait_for(lambda s: "matrix" in s["shards"] and "matrix" in s["shards"]["matrix"]
+                              and "tick" in s["shards"]["matrix"], timeout=90)
+        snap = state["shards"]["matrix"]["matrix"]
+        self.assertEqual(set(snap["assets"]), {"GOLD", "AUDUSD", "NDX", "BTC", "WTI", "USDCAD"})
+        self.assertEqual(set(snap["pairs"]), {"GOLD/AUDUSD", "NDX/BTC", "WTI/USDCAD"})
+        self.assertTrue(all(v["regime"] for v in snap["assets"].values()))  # k-means fitted during warm-up
+
     def test_dashboard_page(self):
         with urllib.request.urlopen(URL + "/", timeout=5) as resp:
             page = resp.read()
-        self.assertIn(b"EventSource", page)
         self.assertIn(b"Signal heatmap", page)
         self.assertIn(b"Jev decision desk", page)
+        self.assertIn(b'src="/app.js"', page)
+        with urllib.request.urlopen(URL + "/app.js", timeout=5) as resp:
+            self.assertIn(b"EventSource", resp.read())
 
 
 if __name__ == "__main__":

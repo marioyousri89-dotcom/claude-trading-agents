@@ -1,11 +1,18 @@
 # ATS Matrix V2 (paper mode): 750 agents split across 3 engine containers, the
-# 8-bot ring (Polymarket + Crypto Predictor) in its own container, and a
+# 8-bot ring (Polymarket + Crypto Predictor) in its own container, the Whole
+# Matrix desk (4 fused strategies) in another, and a
 # live-log dashboard with the signal heatmap and Jev decision desk.
 #   docker compose up --build          start everything
 #   docker compose logs -f             follow live logs from every container
 #   open http://127.0.0.1:8080         live dashboard
 
+# Cap Docker's own copy of container output (the default keeps it forever).
+x-logging: &logging
+  driver: json-file
+  options: { max-size: "20m", max-file: "3" }
+
 x-engine: &engine
+  logging: *logging
   build:
     context: .
     args:
@@ -34,6 +41,7 @@ services:
 
   ring:
     image: claude-trading-agents
+    logging: *logging
     depends_on: [engine-0]
     command: ["python", "-m", "trading.ring"]
     restart: on-failure
@@ -44,13 +52,28 @@ services:
       TICKS: ${TICKS:-0}
       LEARNING_INTERVAL_SECONDS: ${LEARNING_INTERVAL_SECONDS:-}
 
+  matrix:
+    image: claude-trading-agents
+    logging: *logging
+    depends_on: [engine-0]
+    command: ["python", "-m", "trading.matrix"]
+    restart: on-failure
+    volumes:
+      - events:/events
+    environment:
+      TICK_SECONDS: ${MATRIX_TICK_SECONDS:-1.0}
+      TICKS: ${TICKS:-0}
+      LEARNING_INTERVAL_SECONDS: ${LEARNING_INTERVAL_SECONDS:-}
+
   dashboard:
     image: claude-trading-agents
+    logging: *logging
     depends_on: [engine-0]
     command: ["python", "-m", "trading.dashboard"]
     restart: unless-stopped
     environment:
       DASHBOARD_HOST: 0.0.0.0
+      DASHBOARD_AUTH: "off"  # safe only because the port is bound to localhost below
     volumes:
       - events:/events:ro
     ports:

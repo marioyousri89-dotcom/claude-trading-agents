@@ -49,3 +49,32 @@ jobs:
       - name: Tear down
         if: always()
         run: docker compose down -v
+
+  cloud:
+    name: cloud / single container (Render)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build image
+        run: docker build -t claude-trading-agents .
+      - name: Refuses to start without a password
+        run: |
+          if docker run --rm -e PORT=8091 claude-trading-agents python -m trading.cloud; then
+            echo "started without DASHBOARD_PASSWORD"; exit 1
+          fi
+      - name: Start the whole system in one container, as Render runs it
+        run: |
+          PW=$(openssl rand -hex 16)
+          echo "::add-mask::$PW"
+          echo "PW=$PW" >> "$GITHUB_ENV"
+          docker run -d --name ats-cloud -p 127.0.0.1:8090:8090 -e PORT=8090 \
+            -e DASHBOARD_PASSWORD="$PW" claude-trading-agents python -m trading.cloud
+      - name: Cloud container tests
+        run: python3 -m unittest tests.containers.test_cloud -v
+        env:
+          CLOUD_URL: http://127.0.0.1:8090
+          CLOUD_PASSWORD: ${{ env.PW }}
+      - name: Container logs
+        if: always()
+        run: docker logs --tail 200 ats-cloud

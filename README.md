@@ -37,6 +37,13 @@ trades).
 | **Polymarket bot** | `trading/polymarket.py`: negative-risk squeeze (ε = 0.04), cross-book arbitrage (min spread $0.01) and maker-rebate hunting (0.40–0.60 band). Arbitrage must clear fees, slippage and the 3% oracle-dispute buffer. |
 | **HUD** | The dashboard shows the 8-bot signal heatmap and the Jev decision desk (requests, approval rate, session P&L) |
 
+**Capital:** the ring has $1M of paper capital. Every buy must fit in free capital, and arbitrage cost stays
+locked until the market resolves (simulated as 600 ticks). P&L is realized only at resolution, and
+refused trades are logged as `insufficient free capital`.
+
+**Logs:** event files rotate at `EVENTS_MAX_MB` (default 50 MB, keeping one backup), and Docker's own
+container logs are capped at 3 × 20 MB per container, so a 24/7 run can't fill the disk.
+
 **Assumptions** (the config gives rates, not formulas; all are documented in `trading/polymarket.py`):
 - The taker fee per share is `rate × p × (1 − p)`.
 - Makers earn 25% of the taker fee as a rebate.
@@ -51,10 +58,55 @@ trades).
 `MODE=live` is refused, and any live path must go through the login gate. The simulated P&L shows the
 plumbing works. It is **not** evidence that the strategies would make money.
 
+## Whole Matrix desk (paper mode)
+
+`trading/matrix.py` fuses four strategies into one decision, on a simulated cross-asset market
+(Gold, AUDUSD, Nasdaq, Bitcoin, Oil, USDCAD) with calm and stormy periods and trending and ranging phases.
+
+| Layer | What it does |
+|---|---|
+| **Multi-timeframe confluence** | EMA(8) vs EMA(21) on 1-minute, 15-minute, 1-hour and daily bars. A trend trade needs all four to agree. |
+| **Regime switching (ML)** | k-means clustering (`trading/regimes.py`) on volatility and trend-efficiency features labels each asset low or high volatility, and trending or ranging. Trend trades run only in trending regimes, high volatility halves size, and new pair trades pause when a leg is in a high-volatility trend. |
+| **Cross-asset stat arb** | Pairs Gold/AUDUSD, Nasdaq/Bitcoin and Oil/USDCAD. A rolling one-day hedge ratio and spread z-score: enter at 2, exit at 0.5, stop at 4. Both legs trade together, and negative hedge ratios are supported. |
+| **Confluence filter and news exits** | Strong contrary news suppresses a trade and exits an open one; mild contrary news shrinks it. **The news feed isn't connected yet** (it needs network access and API keys), so the live desk uses a neutral feed. The filter is fully tested with a stub feed. |
+
+Orders are sized to order-book depth (slippage within tolerance), then pass the risk limits and Jev.
+Brain Alpha re-weights trend vs arbitrage. The desk warms up on 21 simulated days at start (a few seconds)
+so the daily timeframe has data. One tick is one simulated minute.
+
+## Run it in the cloud, with an app icon on your phone
+
+`render.yaml` deploys the whole system as one always-on service on [Render](https://render.com)
+(Starter plan, about $7/month). `python -m trading.cloud` runs the 3 engine shards and the 8-bot ring
+under a supervisor that restarts crashes, and serves the dashboard with password login.
+
+**Deploy (one time):**
+1. Sign up at render.com with your GitHub account.
+2. Click **New → Blueprint**, pick this repository and click **Apply**. Render builds the Dockerfile and
+   gives you a `https://ats-matrix-….onrender.com` address.
+3. Open the service's **Environment** tab and copy `DASHBOARD_PASSWORD`. Render generated it; it isn't
+   in the repo.
+
+After that, every merge to `main` redeploys automatically.
+
+**Add the app icon:**
+- **iPhone (Safari):** open your Render address, sign in, tap **Share → Add to Home Screen**.
+- **Android (Chrome):** open the address, sign in, tap **⋮ → Install app** (or **Add to Home screen**).
+
+The icon opens the dashboard full-screen like an app. You stay signed in for 30 days (`SESSION_DAYS`).
+Changing `DASHBOARD_PASSWORD` or `SESSION_SECRET` in Render signs every device out.
+
+**Security:**
+- The dashboard refuses to start on a public address without a password of at least 12 characters.
+- Failed logins are limited to 5 per client per 15 minutes.
+- Sessions are signed, `HttpOnly`, `Secure` cookies.
+- Every page sends a strict Content-Security-Policy.
+- Local Docker Compose runs without a login only because its port is bound to `127.0.0.1`.
+
 ## Running it
 
 ```sh
-docker compose up --build        # 3 engines x 250 agents + 8-bot ring + dashboard
+docker compose up --build        # 3 engines x 250 agents + 8-bot ring + Whole Matrix + dashboard
 docker compose logs -f           # live logs from every container
 open http://127.0.0.1:8080       # live dashboard (bound to localhost only)
 docker compose down -v
@@ -73,6 +125,7 @@ version with `python run_agent.py`.
 | Job | Matrix | What it checks |
 |---|---|---|
 | `test` | Linux, macOS, Windows × Python 3.10–3.14 (15 jobs) | Unit tests, including a full 750-agent run and a 3-shard dashboard test |
+| `cloud` | The single-container image Render runs | Refuses to start without a password, then runs all 750 agents and the ring in one container and checks login, data, health check, manifest and app icon |
 | `containers` | Python 3.12 and 3.13 images | Builds and starts all 5 containers, then checks that all 750 agents report, every shard and the ring keep ticking, the live log stream reaches all of them, and the heatmap and Jev desk are populated. Container logs are printed at the end of each job. |
 
 GitHub's macOS and Windows runners can't run Linux containers, so container tests run on Linux. macOS
