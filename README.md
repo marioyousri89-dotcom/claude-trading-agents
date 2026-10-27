@@ -37,6 +37,13 @@ trades).
 | **Polymarket bot** | `trading/polymarket.py`: negative-risk squeeze (ε = 0.04), cross-book arbitrage (min spread $0.01) and maker-rebate hunting (0.40–0.60 band). Arbitrage must clear fees, slippage and the 3% oracle-dispute buffer. |
 | **HUD** | The dashboard shows the 8-bot signal heatmap and the Jev decision desk (requests, approval rate, session P&L) |
 
+**Capital:** the ring has $1M of paper capital. Every buy must fit in free capital, and arbitrage cost stays
+locked until the market resolves (simulated as 600 ticks). P&L is realized only at resolution, and
+refused trades are logged as `insufficient free capital`.
+
+**Logs:** event files rotate at `EVENTS_MAX_MB` (default 50 MB, keeping one backup), and Docker's own
+container logs are capped at 3 × 20 MB per container, so a 24/7 run can't fill the disk.
+
 **Assumptions** (the config gives rates, not formulas; all are documented in `trading/polymarket.py`):
 - The taker fee per share is `rate × p × (1 − p)`.
 - Makers earn 25% of the taker fee as a rebate.

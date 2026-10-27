@@ -26,23 +26,44 @@ class EventHub:
         self.seq = 0
         self.shards: dict[str, dict] = {}
         self.cond = threading.Condition()
-        self.offsets: dict[Path, int] = {}
+        self.offsets: dict[Path, tuple[int, int]] = {}  # path -> (inode, offset)
 
     def poll_files(self) -> None:
         for path in sorted(self.events_dir.glob("events-*.jsonl")):
-            offset = self.offsets.get(path, 0)
             with open(path, "rb") as f:
+                st = os.fstat(f.fileno())
+                inode, offset = self.offsets.get(path, (st.st_ino, 0))
+                if inode != st.st_ino or st.st_size < offset:
+                    # The engine rotated the file. Finish the old one (now <name>.1)
+                    # first so no events are lost, then read the new one from the top.
+                    self._finish_rotated(path, inode, offset)
+                    offset = 0
                 f.seek(offset)
                 chunk = f.read()
             end = chunk.rfind(b"\n") + 1  # only consume complete lines
             if not end:
+                self.offsets[path] = (st.st_ino, offset)
                 continue
-            self.offsets[path] = offset + end
-            for line in chunk[:end].splitlines():
-                try:
-                    self.add(json.loads(line))
-                except ValueError:
-                    continue
+            self.offsets[path] = (st.st_ino, offset + end)
+            self._consume(chunk[:end])
+
+    def _finish_rotated(self, path: Path, inode: int, offset: int) -> None:
+        backup = path.with_name(path.name + ".1")
+        try:
+            with open(backup, "rb") as f:
+                if os.fstat(f.fileno()).st_ino != inode:
+                    return  # rotated more than once since the last poll; that tail is gone
+                f.seek(offset)
+                self._consume(f.read())
+        except FileNotFoundError:
+            pass
+
+    def _consume(self, chunk: bytes) -> None:
+        for line in chunk.splitlines():
+            try:
+                self.add(json.loads(line))
+            except ValueError:
+                continue
 
     def add(self, event: dict) -> None:
         with self.cond:
