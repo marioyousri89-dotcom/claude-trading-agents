@@ -67,6 +67,20 @@ class WebAuthTests(unittest.TestCase):
         self.assertTrue(auth.allowed("5.6.7.8"))
         clock.t += 15 * 60 + 1
         self.assertTrue(auth.allowed("1.2.3.4"))
+        self.assertEqual(len(auth._failures), 0)  # expired entries are dropped
+
+    def test_lockout_table_stays_bounded(self):
+        from trading import webauth
+        clock = FakeClock()
+        auth = WebAuth(PASSWORD, "s", clock=clock)
+        for i in range(10_000):  # many fake client addresses
+            auth.allowed(f"10.0.{i // 256}.{i % 256}")
+        self.assertEqual(len(auth._failures), 0)  # checking alone allocates nothing
+        for i in range(3_000):
+            auth.record_failure(f"fake-{i}")
+            if i % 500 == 0:
+                clock.t += 15 * 60 + 1
+        self.assertLessEqual(len(auth._failures), webauth.MAX_TRACKED_CLIENTS + 500)
 
 
 class ServerTests(unittest.TestCase):
@@ -145,6 +159,9 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(resp.getheader("Location"), "/login?error=locked")
         resp, _ = self.login(ip="8.8.8.8")
         self.assertEqual(resp.getheader("Location"), "/")
+
+    def test_stalled_connections_time_out(self):
+        self.assertEqual(self.server.RequestHandlerClass.timeout, 60)
 
     def test_oversized_login_body_rejected(self):
         resp, _ = self.request("POST", "/login", body="password=" + "x" * 5000)

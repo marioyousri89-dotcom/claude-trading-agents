@@ -140,6 +140,7 @@ def make_handler(hub: EventHub, auth: WebAuth | None = None):
 
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
+        timeout = 60  # close idle or stalled connections (e.g. a request sent byte by byte)
 
         def log_message(self, *args):
             pass

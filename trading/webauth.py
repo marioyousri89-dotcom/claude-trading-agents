@@ -24,6 +24,7 @@ PER_CLIENT_FAILURES = 5
 GLOBAL_FAILURES = 50
 FAILURE_WINDOW = 15 * 60
 LOOPBACK = {"127.0.0.1", "localhost", "::1"}
+MAX_TRACKED_CLIENTS = 1024  # above this, expired entries are swept
 
 
 class WebAuth:
@@ -81,13 +82,23 @@ class WebAuth:
             q.popleft()
 
     def allowed(self, client: str) -> bool:
-        q = self._failures[client]
-        self._prune(q)
+        # Look up without creating an entry, so unknown clients cost no memory.
+        q = self._failures.get(client)
+        if q is not None:
+            self._prune(q)
+            if not q:
+                del self._failures[client]
+                q = None
         self._prune(self._global)
-        return len(q) < PER_CLIENT_FAILURES and len(self._global) < GLOBAL_FAILURES
+        return (len(q) if q else 0) < PER_CLIENT_FAILURES and len(self._global) < GLOBAL_FAILURES
 
     def record_failure(self, client: str) -> None:
         now = self.clock()
+        if len(self._failures) >= MAX_TRACKED_CLIENTS:
+            for key in list(self._failures):
+                self._prune(self._failures[key])
+                if not self._failures[key]:
+                    del self._failures[key]
         self._failures[client].append(now)
         self._global.append(now)
 

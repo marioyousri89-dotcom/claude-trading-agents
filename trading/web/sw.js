@@ -1,6 +1,6 @@
 // Service worker: makes the dashboard installable and shows an offline page.
 // Live data (/api, /events) and authenticated pages are never cached.
-const CACHE = 'ats-shell-v1';
+const CACHE = 'ats-shell-v2';
 const SHELL = ['/offline.html', '/app.css', '/icons/icon-192.png'];
 
 self.addEventListener('install', (e) => {
@@ -16,5 +16,8 @@ self.addEventListener('activate', (e) => {
 self.addEventListener('fetch', (e) => {
   if (e.request.mode === 'navigate') {
     e.respondWith(fetch(e.request).catch(() => caches.match('/offline.html')));
+  } else if (SHELL.includes(new URL(e.request.url).pathname)) {
+    // The offline page's own styles and icon come from this cache.
+    e.respondWith(caches.match(e.request).then((hit) => hit || fetch(e.request)));
   }
 });
