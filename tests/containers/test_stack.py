@@ -72,9 +72,11 @@ class StackTests(unittest.TestCase):
     def test_dashboard_page(self):
         with urllib.request.urlopen(URL + "/", timeout=5) as resp:
             page = resp.read()
-        self.assertIn(b"EventSource", page)
         self.assertIn(b"Signal heatmap", page)
         self.assertIn(b"Jev decision desk", page)
+        self.assertIn(b'src="/app.js"', page)
+        with urllib.request.urlopen(URL + "/app.js", timeout=5) as resp:
+            self.assertIn(b"EventSource", resp.read())
 
 
 if __name__ == "__main__":

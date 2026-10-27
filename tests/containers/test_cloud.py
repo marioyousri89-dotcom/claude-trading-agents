@@ -24,6 +24,19 @@ class CloudTests(unittest.TestCase):
     def setUpClass(cls):
         parts = urllib.parse.urlsplit(URL)
         cls.host, cls.port = parts.hostname, parts.port
+        # The container was just started: wait until the dashboard accepts connections.
+        deadline = time.time() + 60
+        while True:
+            try:
+                conn = http.client.HTTPConnection(cls.host, cls.port, timeout=5)
+                conn.request("GET", "/login")
+                conn.getresponse().read()
+                conn.close()
+                return
+            except OSError:
+                if time.time() > deadline:
+                    raise
+                time.sleep(1)
 
     def request(self, method, path, body=None, cookie=None):
         conn = http.client.HTTPConnection(self.host, self.port, timeout=10)

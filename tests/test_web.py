@@ -2,6 +2,7 @@
 
 import http.client
 import json
+import os
 import sys
 import tempfile
 import threading
@@ -184,7 +185,8 @@ class ServerTests(unittest.TestCase):
 
 class SupervisorTests(unittest.TestCase):
     def child(self, name, code):
-        return cloud.Child(name, [sys.executable, "-c", f"import sys; sys.exit({code})"], {})
+        # A full environment: Python 3.10 on Windows can't start without SYSTEMROOT.
+        return cloud.Child(name, [sys.executable, "-c", f"import sys; sys.exit({code})"], dict(os.environ))
 
     def run_checks(self, sup, clock, steps=40, dt=0.5):
         for _ in range(steps):
