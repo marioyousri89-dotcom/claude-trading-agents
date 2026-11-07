@@ -16,13 +16,22 @@ from trading.risk import RiskLimits, RiskManager
 
 
 class TeamTests(unittest.TestCase):
-    def test_750_agents_mixed_team(self):
+    def test_default_team_is_four_departments_of_350(self):
+        team = build_team(engine.DEFAULT_AGENT_COUNT, ["AAPL", "BTC"], seed=1)
+        self.assertEqual(len(team), 1400)
+        self.assertEqual(len({a.agent_id for a in team}), 1400)
+        self.assertEqual(Counter(a.department for a in team),
+                         {"trend": 350, "reversion": 350, "research": 350, "risk": 350})
+        self.assertEqual(Counter(a.role for a in team), {"trader": 700, "analyst": 350, "risk": 350})
+        self.assertEqual({a.symbol for a in team}, {"AAPL", "BTC"})
+        # Every agent has its own brain and its own workspace.
+        self.assertEqual(len({id(a.brain) for a in team}), 1400)
+        self.assertEqual(len({id(a.workspace) for a in team}), 1400)
+
+    def test_750_agents_split_evenly(self):
         team = build_team(750, ["AAPL", "BTC"], seed=1)
         self.assertEqual(len(team), 750)
-        self.assertEqual(len({a.agent_id for a in team}), 750)
-        roles = Counter(a.role for a in team)
-        self.assertEqual(roles, {"trader": 600, "analyst": 120, "risk": 30})
-        self.assertEqual({a.symbol for a in team}, {"AAPL", "BTC"})
+        self.assertEqual(sorted(Counter(a.department for a in team).values()), [187, 187, 188, 188])
 
     def test_shards_partition_the_team(self):
         symbols = ["AAPL", "BTC", "ETH"]
@@ -39,7 +48,14 @@ class TeamTests(unittest.TestCase):
             m, b, r = momentum.observe(p), breakout.observe(p), reversion.observe(p)
         self.assertGreater(m.value, 0)
         self.assertEqual(b.value, 1.0)
-        self.assertLess(r.value, 0)
+        self.assertLess(reversion.workspace["last_signal"], 0)
+        # Each brain learned from its own results: the trend-followers were
+        # right and trust themselves more; the fader kept losing and sat out.
+        self.assertGreater(momentum.brain.weight, 1.0)
+        self.assertGreater(breakout.brain.weight, 1.0)
+        self.assertTrue(reversion.brain.sitting_out)
+        self.assertIsNone(r)
+        self.assertGreater(reversion.workspace["sat_out"], 0)
 
 
 class RiskTests(unittest.TestCase):

@@ -1,13 +1,14 @@
 """Run one engine shard. Several shards together run the full agent team.
 
 Configured with environment variables so the same image runs as any shard:
-  AGENT_COUNT   total agents across all shards (default 750)
+  AGENT_COUNT   total agents across all shards, split evenly over 4 departments (default 1400)
   SHARD_ID      this shard's index, 0-based (default 0)
   SHARD_COUNT   number of shards (default 1)
   SYMBOLS       comma-separated symbols (default AAPL,MSFT,NVDA,AMZN,GOOG,TSLA,META,AMD,BTC,ETH)
   TICKS         ticks to run, 0 = forever (default 0)
   TICK_SECONDS  delay between ticks (default 0.5)
-  EVENTS_DIR    directory for the shard's events-<id>.jsonl (optional)
+  EVENTS_DIR    directory for the shard's events-<id>.jsonl (optional). The dashboard's
+                agent slider writes control.json here; shards resize to match.
   SEED          market/agent seed (default 42)
   ATS_CONFIG    risk/brain config file (default config/ats_matrix.json)
   LEARNING_INTERVAL_SECONDS  override the config's self-adaptive learning interval
@@ -21,7 +22,9 @@ import time
 from pathlib import Path
 
 from . import config as ats_config
+from . import control
 from .agents import build_team
+from .org import DEPARTMENTS, MIN_DEPARTMENT_SIZE
 from .brains import BrainAlpha, BrainBeta
 from .broker import PaperBroker
 from .desk import Desk
@@ -30,6 +33,8 @@ from .market import SimulatedMarket
 from .risk import RiskLimits, RiskManager
 
 DEFAULT_SYMBOLS = "AAPL,MSFT,NVDA,AMZN,GOOG,TSLA,META,AMD,BTC,ETH"
+DEFAULT_AGENT_COUNT = MIN_DEPARTMENT_SIZE * len(DEPARTMENTS)  # 350 per department
+CONTROL_EVERY = 10  # ticks between checks of the agent slider
 
 
 def shard_agents(agent_count: int, symbols: list[str], shard_id: int, shard_count: int, seed: int):
@@ -38,12 +43,20 @@ def shard_agents(agent_count: int, symbols: list[str], shard_id: int, shard_coun
     return build_team(agent_count, symbols, seed)[shard_id::shard_count]
 
 
+def resize(desk: Desk, agent_count: int, symbols: list[str], shard_id: int, shard_count: int, seed: int) -> int:
+    """Grow or shrink the shard's team to match `agent_count`. Agents that stay keep their brains."""
+    current = {a.agent_id: a for a in desk.agents}
+    wanted = shard_agents(agent_count, symbols, shard_id, shard_count, seed)
+    desk.agents = [current.get(a.agent_id, a) for a in wanted]
+    return len(desk.agents)
+
+
 def run(env=os.environ, stream=None) -> Desk:
     from .ring import require_paper
 
     require_paper(env.get("MODE", "paper"))
     cfg = ats_config.load(env.get("ATS_CONFIG"))
-    agent_count = int(env.get("AGENT_COUNT", 750))
+    agent_count = int(env.get("AGENT_COUNT", DEFAULT_AGENT_COUNT))
     shard_id = int(env.get("SHARD_ID", 0))
     shard_count = int(env.get("SHARD_COUNT", 1))
     symbols = [s.strip() for s in env.get("SYMBOLS", DEFAULT_SYMBOLS).split(",") if s.strip()]
@@ -63,11 +76,12 @@ def run(env=os.environ, stream=None) -> Desk:
     # Every shard sees the same market (same seed), but trades its own agents.
     market = SimulatedMarket(symbols, seed=seed)
 
-    roles = {}
+    roles, departments = {}, {}
     for a in agents:
         roles[a.role] = roles.get(a.role, 0) + 1
+        departments[a.department] = departments.get(a.department, 0) + 1
     log.emit("start", agents=len(agents), total_agents=agent_count, shard_count=shard_count,
-             roles=roles, symbols=symbols, mode="paper", config_version=cfg.version,
+             roles=roles, departments=departments, symbols=symbols, mode="paper", config_version=cfg.version,
              learning_interval_seconds=alpha.interval)
 
     stopping = False
@@ -79,6 +93,14 @@ def run(env=os.environ, stream=None) -> Desk:
     signal.signal(signal.SIGTERM, stop)
     try:
         while not stopping and (ticks == 0 or desk.ticks < ticks):
+            if events_dir and desk.ticks % CONTROL_EVERY == 0:
+                per_department = control.read(Path(events_dir))
+                if per_department and control.total(per_department) != agent_count:
+                    before = len(desk.agents)
+                    agent_count = control.total(per_department)
+                    after = resize(desk, agent_count, symbols, shard_id, shard_count, seed)
+                    log.emit("resize", agents=after, was=before, total_agents=agent_count,
+                             per_department=per_department)
             desk.step(market.tick())
             if tick_seconds:
                 time.sleep(tick_seconds)

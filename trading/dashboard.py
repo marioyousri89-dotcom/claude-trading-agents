@@ -2,6 +2,12 @@
 
 Endpoints:
   /             live log page
+  /3d           3D cluster view: every department, manager and pipeline stage live,
+                with TradingView price and equity charts
+  /api/org      departments and manager reports merged across shards (JSON)
+  /api/prices   recent price and equity history for the charts (JSON)
+  /api/agents   GET the agent slider's setting; POST {"per_department": n} to resize
+                every shard (JSON only, so other sites can't post to it)
   /events       Server-Sent Events stream of new events
   /api/state    latest tick, leaderboard, agent count per shard, ring heatmap
                 and the Jev decision desk totals (JSON)
@@ -16,7 +22,12 @@ from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from . import control
+from .cluster_page import CLUSTER_PAGE
+from .org import DEPARTMENTS, manager_reports
+
 HISTORY = 500
+PRICE_HISTORY = 600
 
 
 class EventHub:
@@ -27,6 +38,9 @@ class EventHub:
         self.shards: dict[str, dict] = {}
         self.cond = threading.Condition()
         self.offsets: dict[Path, int] = {}
+        # Every engine shard sees the same market, so one shard's ticks give the price history.
+        self.price_history: deque[dict] = deque(maxlen=PRICE_HISTORY)
+        self.equity: dict[int, dict[str, float]] = {}
 
     def poll_files(self) -> None:
         for path in sorted(self.events_dir.glob("events-*.jsonl")):
@@ -50,9 +64,63 @@ class EventHub:
             self.events.append((self.seq, event))
             shard = self.shards.setdefault(str(event.get("shard", "?")), {})
             kind = event.get("type")
-            if kind in ("start", "tick", "leaderboard", "stop", "heatmap"):
+            if kind in ("start", "tick", "leaderboard", "stop", "heatmap", "org"):
                 shard[kind] = event
+            if kind == "resize" and "start" in shard:
+                shard["start"] = {**shard["start"], "agents": event["agents"], "total_agents": event["total_agents"]}
+            if kind == "tick" and "prices" in event:
+                self._record_tick(event)
             self.cond.notify_all()
+
+    def _record_tick(self, event: dict) -> None:
+        tick = event["tick"]
+        self.equity.setdefault(tick, {})[str(event.get("shard"))] = event.get("pnl", 0.0)
+        if len(self.equity) > PRICE_HISTORY:
+            del self.equity[min(self.equity)]
+        if not self.price_history or tick > self.price_history[-1]["tick"]:
+            self.price_history.append({"tick": tick, "ts": event["ts"], "prices": event["prices"]})
+
+    def prices(self) -> dict:
+        with self.cond:
+            # Only ticks every shard has reported, so a lagging shard doesn't dent the line.
+            shards = max((len(v) for v in self.equity.values()), default=0)
+            pnl = [{"tick": t, "pnl": round(sum(v.values()), 2)} for t, v in sorted(self.equity.items())
+                   if len(v) == shards]
+            return {"history": list(self.price_history), "pnl": pnl}
+
+    def org(self) -> dict:
+        """Merge every shard's latest department report into one org chart."""
+        with self.cond:
+            reports = [v["org"] for v in self.shards.values() if "org" in v]
+        merged = {d.key: {"name": d.name, "job": d.job, "agents": 0, "active": 0, "sitting_out": 0, "pnl": 0.0,
+                          "votes": [], "vote_sum": 0.0, "weight_sum": 0.0, "wins": 0, "experience": 0}
+                  for d in DEPARTMENTS}
+        for report in reports:
+            for key, dept in report["departments"].items():
+                m = merged.get(key)
+                if m is None:
+                    continue
+                m["agents"] += dept["agents"]
+                m["active"] += dept["active"]
+                m["pnl"] += dept["pnl"]
+                m["votes"].extend(dept["votes"])
+                m["sitting_out"] += dept.get("sitting_out", 0)
+                m["wins"] += dept.get("wins", 0)
+                m["experience"] += dept.get("experience", 0)
+                if dept.get("avg_weight") is not None:
+                    m["weight_sum"] += dept["avg_weight"] * dept["agents"]
+                if dept["avg_vote"] is not None:
+                    m["vote_sum"] += dept["avg_vote"] * dept["active"]
+        for m in merged.values():
+            m["avg_vote"] = round(m.pop("vote_sum") / m["active"], 4) if m["active"] else None
+            m["avg_weight"] = round(m.pop("weight_sum") / m["agents"], 4) if m["agents"] else None
+            m["skill"] = round(m["wins"] / m["experience"], 4) if m["experience"] else None
+            m["pnl"] = round(m["pnl"], 2)
+        tick = max((r["tick"] for r in reports), default=0)
+        per_department = control.read(self.events_dir)
+        return {"tick": tick, "departments": merged, "managers": manager_reports(merged),
+                "slider": {"per_department": per_department, "min": control.MIN_DEPARTMENT_SIZE,
+                           "max": control.MAX_DEPARTMENT_SIZE, "departments": len(DEPARTMENTS)}}
 
     def since(self, seq: int, timeout: float) -> list[tuple[int, dict]]:
         with self.cond:
@@ -100,7 +168,8 @@ header{padding:12px 16px;border-bottom:1px solid #222}
 #log{padding:0 16px 16px;white-space:pre-wrap;word-break:break-all}
 #log div{border-bottom:1px solid #1d2028;padding:2px 0}
 </style></head><body>
-<header><b>Trading Agents</b> <span class="mut">paper mode · <span id="total">0</span> agents reporting</span></header>
+<header><b>Trading Agents</b> <span class="mut">paper mode · <span id="total">0</span> agents reporting</span>
+ · <a href="/3d" style="color:#58a6ff">3D cluster view</a></header>
 <div id="shards"></div>
 <div id="hud"><div class="card"><b>Signal heatmap</b> <span class="mut">8-bot ring</span><div id="heat"></div></div>
 <div class="card"><b>Jev decision desk</b><div id="desk" class="mut">waiting…</div></div></div>
@@ -151,12 +220,45 @@ def make_handler(hub: EventHub):
                 state = hub.state()
                 ok = state["agents_reporting"] > 0
                 self._send(200 if ok else 503, json.dumps({"ok": ok, **state}).encode(), "application/json")
+            elif self.path == "/3d":
+                self._send(200, CLUSTER_PAGE.encode(), "text/html; charset=utf-8")
+            elif self.path == "/api/org":
+                self._send(200, json.dumps(hub.org()).encode(), "application/json")
+            elif self.path == "/api/agents":
+                self._send(200, json.dumps({"per_department": control.read(hub.events_dir)}).encode(),
+                           "application/json")
+            elif self.path == "/api/prices":
+                self._send(200, json.dumps(hub.prices()).encode(), "application/json")
             elif self.path == "/api/state":
                 self._send(200, json.dumps(hub.state()).encode(), "application/json")
             elif self.path == "/events":
                 self.stream()
             else:
                 self._send(404, b"not found", "text/plain")
+
+        def do_POST(self):
+            if self.path != "/api/agents":
+                self._send(404, b"not found", "text/plain")
+                return
+            # Requiring a JSON content type means a browser on another site must
+            # ask permission first (a CORS preflight), which this server never grants.
+            if self.headers.get("Content-Type", "").split(";")[0].strip() != "application/json":
+                self._send(415, b'{"error":"send JSON"}', "application/json")
+                return
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+                if not 0 < length <= 1024:
+                    raise ValueError("body too large or empty")
+                per_department = json.loads(self.rfile.read(length)).get("per_department")
+                control.write(hub.events_dir, per_department)
+            except (ValueError, AttributeError) as e:
+                self._send(400, json.dumps({"error": str(e)}).encode(), "application/json")
+                return
+            except OSError:
+                self._send(503, b'{"error":"could not save the setting"}', "application/json")
+                return
+            body = {"per_department": per_department, "total": control.total(per_department)}
+            self._send(200, json.dumps(body).encode(), "application/json")
 
         def stream(self):
             self.send_response(200)

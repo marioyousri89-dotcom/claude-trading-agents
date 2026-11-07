@@ -6,10 +6,12 @@ from .agents import REVERSION, Agent, Trader
 from .brains import BrainAlpha, BrainBeta
 from .broker import PaperBroker
 from .events import EventLog
+from .org import manager_reports, summarize
 from .risk import RiskManager
 
 SIGNAL_THRESHOLD = 0.15
 LEADERBOARD_EVERY = 20
+ORG_EVERY = 5  # how often the managers report their departments
 
 
 class Desk:
@@ -32,12 +34,14 @@ class Desk:
         if self.beta:
             self.beta.begin()
         votes = defaultdict(lambda: {"trend": [], "reversion": [], "analyst": [], "risk": []})
+        agent_votes: dict[str, float] = {}
         for agent in self.agents:
             if agent.symbol not in prices:
                 continue
             vote = agent.observe(prices[agent.symbol])
             if vote is None:
                 continue
+            agent_votes[agent.agent_id] = vote.value
             if isinstance(agent, Trader):
                 votes[agent.symbol]["reversion" if agent.style == REVERSION else "trend"].append(vote.value)
             else:
@@ -86,8 +90,11 @@ class Desk:
         self.log.emit(
             "tick", tick=self.ticks, agents=len(self.agents), orders=orders, exposure_vote=round(exposure, 3),
             equity=round(equity, 2), pnl=round(equity - self.broker.starting_cash, 2), halted=self.risk.halted,
-            **extra,
+            prices={s: round(p, 4) for s, p in prices.items()}, **extra,
         )
+        if self.ticks % ORG_EVERY == 0 or self.ticks == 1:
+            departments = summarize(self.agents, agent_votes)
+            self.log.emit("org", tick=self.ticks, departments=departments, managers=manager_reports(departments))
         if self.ticks % LEADERBOARD_EVERY == 0:
             self.log.emit("leaderboard", tick=self.ticks, top=self.leaderboard(5))
 
@@ -124,4 +131,5 @@ class Desk:
 
     def leaderboard(self, n: int) -> list[dict]:
         traders = sorted((a for a in self.agents if isinstance(a, Trader)), key=lambda a: a.pnl, reverse=True)
-        return [{"agent": a.agent_id, "symbol": a.symbol, "pnl": round(a.pnl, 4)} for a in traders[:n]]
+        return [{"agent": a.agent_id, "symbol": a.symbol, "pnl": round(a.pnl, 4), "brain": a.brain.snapshot()}
+                for a in traders[:n]]

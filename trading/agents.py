@@ -4,12 +4,20 @@
 - Analysts judge the regime of one symbol and scale how much the desk trusts
   trend-following versus mean-reversion traders.
 - Risk monitors watch volatility and vote to shrink overall exposure.
+
+Agents are staffed into the departments in `org.py`. Each agent keeps its own
+workspace (a private notebook of what it has seen and decided) and its own
+brain (`brain.py`), which learns from the agent's own results and decides how
+hard it votes, or whether it votes at all.
 """
 
 import random
 import statistics
 from collections import deque
 from dataclasses import dataclass
+
+from .brain import AgentBrain
+from .org import department_sizes
 
 TREND = "trend"
 REVERSION = "reversion"
@@ -26,6 +34,8 @@ class Vote:
 class Agent:
     role = "agent"
     kind = "agent"
+    # The vote range and the "no opinion" value the brain shapes votes around.
+    neutral, low, high = 0.0, -1.0, 1.0
 
     def __init__(self, agent_id: str, symbol: str, window: int):
         self.agent_id = agent_id
@@ -34,17 +44,39 @@ class Agent:
         self.prices: deque[float] = deque(maxlen=window + 1)
         self.position = 0.0  # virtual position, used only to score the agent
         self.pnl = 0.0
+        self.department = ""  # set by build_team
+        self.brain = AgentBrain(agent_id)
+        # The agent's own space: nothing else writes here.
+        self.workspace = {"votes_cast": 0, "sat_out": 0, "last_signal": None, "last_vote": None}
 
     def observe(self, price: float) -> Vote | None:
         if self.prices:
             self.pnl += self.position * (price - self.prices[-1])
+            # The brain scores the strategy's last raw signal, even while sitting
+            # out, so an agent can earn its way back in.
+            if self.workspace["last_signal"] is not None:
+                self.brain.learn(self.reward(self.workspace["last_signal"], price))
         self.prices.append(price)
         if len(self.prices) <= self.window:
             return None
-        value = self.decide()
+        signal = self.decide()
+        value = self.brain.shape(signal, self.neutral, self.low, self.high)
+        self.workspace["last_signal"] = signal
+        self.workspace["last_vote"] = value
+        if value is None:
+            self.workspace["sat_out"] += 1
+            if self.role == "trader":
+                self.position = 0.0
+            return None
+        self.workspace["votes_cast"] += 1
         if self.role == "trader":
             self.position = value
         return Vote(self.agent_id, self.role, self.symbol, value)
+
+    def reward(self, signal: float, price: float) -> float:
+        """How right the last signal was, -1..1. Traders: did the price move their way?"""
+        move = price - self.prices[-1]
+        return signal if move > 0 else -signal if move < 0 else 0.0
 
     def decide(self) -> float:
         raise NotImplementedError
@@ -104,6 +136,13 @@ class RegimeAnalyst(Agent):
     role = "analyst"
     kind = "regime_analyst"
 
+    def reward(self, signal, price):
+        # A "trending" call is right when the next move continues the last one.
+        if len(self.prices) < 2:
+            return 0.0
+        continued = (price - self.prices[-1]) * (self.prices[-1] - self.prices[-2])
+        return signal if continued > 0 else -signal if continued < 0 else 0.0
+
     def decide(self):
         prices = list(self.prices)
         path = sum(abs(b - a) for a, b in zip(prices, prices[1:]))
@@ -118,6 +157,12 @@ class VolatilityMonitor(Agent):
 
     role = "risk"
     kind = "volatility_monitor"
+    neutral, low, high = 1.0, 0.0, 1.0
+
+    def reward(self, signal, price):
+        # Cutting size is right before a big move; full size is right in calm markets.
+        big = abs(price / self.prices[-1] - 1) > self.vol_limit
+        return 1 - 2 * signal if big else 2 * signal - 1
 
     def __init__(self, agent_id, symbol, window, vol_limit):
         super().__init__(agent_id, symbol, window)
@@ -130,24 +175,31 @@ class VolatilityMonitor(Agent):
         return max(0.0, min(1.0, self.vol_limit / vol)) if vol else 1.0
 
 
-TRADER_TYPES = (Momentum, MovingAverageCross, Breakout, MeanReversion)
-TEAM_MIX = {"trader": 0.80, "analyst": 0.16, "risk": 0.04}
+TREND_TYPES = (Momentum, MovingAverageCross, Breakout)
+TRADER_TYPES = TREND_TYPES + (MeanReversion,)
 
 
 def build_team(count: int, symbols: list[str], seed: int = 0) -> list[Agent]:
-    """Build `count` agents spread evenly across symbols with varied parameters."""
+    """Build `count` agents split evenly across the departments, spread across symbols, with varied parameters."""
     rng = random.Random(seed)
-    n_analysts = round(count * TEAM_MIX["analyst"])
-    n_risk = max(1, round(count * TEAM_MIX["risk"])) if count >= 3 else 0
-    n_traders = count - n_analysts - n_risk
-    team: list[Agent] = []
-    for i in range(n_traders):
-        cls = TRADER_TYPES[i % len(TRADER_TYPES)]
-        team.append(cls(f"trader-{i:04d}-{cls.kind}", symbols[i % len(symbols)], rng.randint(5, 60)))
-    for i in range(n_analysts):
-        team.append(RegimeAnalyst(f"analyst-{i:04d}", symbols[i % len(symbols)], rng.randint(10, 80)))
-    for i in range(n_risk):
-        team.append(
-            VolatilityMonitor(f"risk-{i:04d}", symbols[i % len(symbols)], rng.randint(10, 40), rng.uniform(0.008, 0.02))
-        )
-    return team
+    sizes = department_sizes(count)
+
+    def staff(department: str, make) -> list[Agent]:
+        members = []
+        for i in range(sizes[department]):
+            agent = make(i, symbols[i % len(symbols)])
+            agent.department = department
+            members.append(agent)
+        return members
+
+    def trend(i, symbol):
+        cls = TREND_TYPES[i % len(TREND_TYPES)]
+        return cls(f"trend-{i:04d}-{cls.kind}", symbol, rng.randint(5, 60))
+
+    return (
+        staff("trend", trend)
+        + staff("reversion", lambda i, s: MeanReversion(f"reversion-{i:04d}", s, rng.randint(5, 60)))
+        + staff("research", lambda i, s: RegimeAnalyst(f"research-{i:04d}", s, rng.randint(10, 80)))
+        + staff("risk", lambda i, s: VolatilityMonitor(f"risk-{i:04d}", s, rng.randint(10, 40),
+                                                       rng.uniform(0.008, 0.02)))
+    )

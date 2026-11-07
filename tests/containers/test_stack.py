@@ -14,7 +14,7 @@ import urllib.request
 
 URL = os.environ.get("DASHBOARD_URL")
 SHARDS = int(os.environ.get("EXPECT_SHARDS", 3))
-AGENTS = int(os.environ.get("EXPECT_AGENTS", 750))
+AGENTS = int(os.environ.get("EXPECT_AGENTS", 1400))
 EXPECTED = [str(i) for i in range(SHARDS)] + ["ring"]
 RING_BOTS = {"watcher", "analyst", "risk_gate", "executor", "reporter", "vault", "crypto_predictor", "polymarket"}
 
@@ -75,6 +75,20 @@ class StackTests(unittest.TestCase):
         self.assertIn(b"EventSource", page)
         self.assertIn(b"Signal heatmap", page)
         self.assertIn(b"Jev decision desk", page)
+
+    def test_org_chart_and_3d_view(self):
+        def full():
+            org = json.load(urllib.request.urlopen(URL + "/api/org", timeout=5))
+            return org if sum(d["agents"] for d in org["departments"].values()) == AGENTS else None
+
+        deadline, org = time.time() + 60, None
+        while not org and time.time() < deadline:
+            org = full()
+            time.sleep(1)
+        self.assertIsNotNone(org, "departments never added up to all agents")
+        self.assertEqual([m["manager"] for m in org["managers"]], ["Atlas", "Sage", "Sentinel"])
+        with urllib.request.urlopen(URL + "/3d", timeout=5) as resp:
+            self.assertIn(b"Agents per department", resp.read())
 
 
 if __name__ == "__main__":
