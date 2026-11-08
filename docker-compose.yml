@@ -5,7 +5,13 @@
 #   docker compose logs -f             follow live logs from every container
 #   open http://127.0.0.1:8080         live dashboard
 
+# Cap Docker's own copy of container output (the default keeps it forever).
+x-logging: &logging
+  driver: json-file
+  options: { max-size: "20m", max-file: "3" }
+
 x-engine: &engine
+  logging: *logging
   build:
     context: .
     args:
@@ -34,6 +40,7 @@ services:
 
   ring:
     image: claude-trading-agents
+    logging: *logging
     depends_on: [engine-0]
     command: ["python", "-m", "trading.ring"]
     restart: on-failure
@@ -46,6 +53,7 @@ services:
 
   dashboard:
     image: claude-trading-agents
+    logging: *logging
     depends_on: [engine-0]
     command: ["python", "-m", "trading.dashboard"]
     restart: unless-stopped

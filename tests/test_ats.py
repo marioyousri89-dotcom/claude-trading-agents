@@ -303,6 +303,83 @@ class RingTests(unittest.TestCase):
             engine.run({"MODE": "live", "TICKS": "1"}, stream=io.StringIO())
 
 
+class CapitalTests(unittest.TestCase):
+    def test_ring_never_spends_more_than_it_has(self):
+        out = io.StringIO()
+        r = ring.run({"TICKS": "900", "TICK_SECONDS": "0"}, stream=out)
+        ticks = [json.loads(line) for line in out.getvalue().splitlines() if '"type":"tick"' in line]
+        self.assertTrue(all(t["free_capital"] >= -1e-6 for t in ticks))
+        self.assertGreater(r.capital_rejects, 0)  # the sim offers more trades than capital allows
+        self.assertTrue(any('"type":"settle"' in line for line in out.getvalue().splitlines()))
+
+    def test_arbitrage_pnl_is_realised_only_at_resolution(self):
+        r = ring.Ring(CFG, ring.EventLog("ring", None, io.StringIO()))
+        r.locked.append((r.ticks + 3, 50_000.0, 1_234.0, "cross_book_arb"))
+        before = r.pnl["cross_book_arb"]
+        r._settle()
+        self.assertEqual(r.pnl["cross_book_arb"], before)
+        self.assertLess(r.free_capital(), ring.CAPITAL_USDC + sum(r.pnl.values()))
+        r.ticks += 3
+        r._settle()
+        self.assertEqual(r.pnl["cross_book_arb"], before + 1_234.0)
+        self.assertEqual(r.locked, [])
+
+    def test_capital_check_blocks_oversized_trade(self):
+        r = ring.Ring(CFG, ring.EventLog("ring", None, io.StringIO()))
+        self.assertFalse(r._reject_for_capital("cross_book_arb", 10_000))
+        self.assertTrue(r._reject_for_capital("cross_book_arb", ring.CAPITAL_USDC * 2))
+
+
+class LogRotationTests(unittest.TestCase):
+    def test_event_log_rotates_and_dashboard_follows(self):
+        from trading.dashboard import EventHub
+        from trading.events import EventLog
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "events-0.jsonl"
+            log = EventLog(0, path, stream=io.StringIO(), max_bytes=2_000)
+            hub = EventHub(Path(tmp))
+            log.emit("start", agents=5)
+            hub.poll_files()
+            for i in range(200):
+                log.emit("tick", tick=i, pad="x" * 50)
+                if i % 10 == 0:
+                    hub.poll_files()
+            hub.poll_files()
+            log.close()
+            self.assertLessEqual(path.stat().st_size, 2_000)
+            self.assertTrue((Path(tmp) / "events-0.jsonl.1").exists())
+            self.assertEqual(len(list(Path(tmp).iterdir())), 2)  # only current + one backup
+            self.assertEqual(hub.shards["0"]["tick"]["tick"], 199)  # kept following after rotations
+
+    def test_unread_tail_of_rotated_file_is_not_lost(self):
+        from trading.dashboard import EventHub
+        from trading.events import EventLog
+        with tempfile.TemporaryDirectory() as tmp:
+            log = EventLog(0, Path(tmp) / "events-0.jsonl", stream=io.StringIO(), max_bytes=3_000)
+            hub = EventHub(Path(tmp))
+            log.emit("start", agents=5)
+            hub.poll_files()
+            for i in range(40):  # enough to force exactly one rotation between polls
+                log.emit("tick", tick=i, pad="x" * 50)
+            hub.poll_files()
+            log.close()
+            seen = [e["tick"] for _, e in hub.events if e["type"] == "tick"]
+            self.assertEqual(seen, list(range(40)))
+
+    def test_late_dashboard_sees_agents_after_many_rotations(self):
+        from trading.dashboard import EventHub
+        from trading.events import EventLog
+        with tempfile.TemporaryDirectory() as tmp:
+            log = EventLog(0, Path(tmp) / "events-0.jsonl", stream=io.StringIO(), max_bytes=1_500)
+            log.emit("start", agents=250)
+            for i in range(300):  # many rotations
+                log.emit("tick", tick=i, pad="x" * 50)
+            log.close()
+            hub = EventHub(Path(tmp))  # dashboard starts only now
+            hub.poll_files()
+            self.assertEqual(hub.state()["agents_reporting"], 250)
+
+
 class EngineDualBrainTests(unittest.TestCase):
     def test_engine_orders_go_through_jev_and_alpha_learns(self):
         out = io.StringIO()
