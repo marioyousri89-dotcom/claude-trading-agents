@@ -28,3 +28,4 @@ button{background:var(--card);color:var(--fg);border:1px solid #2a2f3a;border-ra
 #pairs{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;font-size:12px}
 #pairs div{background:#11141a;padding:6px 8px;border-radius:4px}
 .tbl-wrap{overflow-x:auto}
+header a{color:#58a6ff}

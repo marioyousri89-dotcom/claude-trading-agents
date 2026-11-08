@@ -2,14 +2,20 @@
 
 Endpoints:
   /             live dashboard (installable as a home-screen app)
+  /3d           3D cluster view: every department, manager and pipeline stage live,
+                with TradingView price and P&L charts and the agent slider
+  /api/org      departments and manager reports merged across shards (JSON)
+  /api/prices   recent price and P&L history for the charts (JSON)
+  /api/agents   GET the agent slider's setting; POST {"per_department": n} to resize
+                every shard (JSON only, so other sites can't post to it)
   /events       Server-Sent Events stream of new events
   /api/state    latest tick, leaderboard, agent count per shard, ring heatmap
                 and the Jev decision desk totals (JSON)
   /health       200 once at least one shard is reporting
   /login        password sign-in when the dashboard is reachable from the internet
 
-When auth is on (see trading/webauth.py), /, /events and /api/state need a
-signed session cookie; /health then reports only {"ok": ...}.
+When auth is on (see trading/webauth.py), /, /3d, /events and the /api/
+endpoints need a signed session cookie; /health then reports only {"ok": ...}.
 """
 
 import json
@@ -21,14 +27,22 @@ from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from . import control
+from .org import DEPARTMENTS, manager_reports
 from .webauth import COOKIE, WebAuth
 
 HISTORY = 500
+PRICE_HISTORY = 600
 WEB = Path(__file__).resolve().parent / "web"
 # Every file the server will ever return, so no request path can reach anything else.
 STATIC = {
     "/app.css": ("app.css", "text/css; charset=utf-8"),
     "/app.js": ("app.js", "text/javascript; charset=utf-8"),
+    "/3d.css": ("3d.css", "text/css; charset=utf-8"),
+    "/3d.js": ("3d.js", "text/javascript; charset=utf-8"),
+    # Vendored so the strict CSP (scripts only from this site) holds and the cloud app needs no CDN.
+    "/vendor/three.min.js": ("vendor/three.min.js", "text/javascript; charset=utf-8"),
+    "/vendor/lightweight-charts.js": ("vendor/lightweight-charts.js", "text/javascript; charset=utf-8"),
     "/sw.js": ("sw.js", "text/javascript; charset=utf-8"),
     "/manifest.webmanifest": ("manifest.webmanifest", "application/manifest+json"),
     "/offline.html": ("offline.html", "text/html; charset=utf-8"),
@@ -51,6 +65,9 @@ class EventHub:
         self.shards: dict[str, dict] = {}
         self.cond = threading.Condition()
         self.offsets: dict[Path, tuple[int, int]] = {}  # path -> (inode, offset)
+        # Every engine shard sees the same market, so one shard's ticks give the price history.
+        self.price_history: deque[dict] = deque(maxlen=PRICE_HISTORY)
+        self.equity: dict[int, dict[str, float]] = {}
 
     def poll_files(self) -> None:
         for path in sorted(self.events_dir.glob("events-*.jsonl")):
@@ -95,9 +112,63 @@ class EventHub:
             self.events.append((self.seq, event))
             shard = self.shards.setdefault(str(event.get("shard", "?")), {})
             kind = event.get("type")
-            if kind in ("start", "tick", "leaderboard", "stop", "heatmap", "matrix"):
+            if kind in ("start", "tick", "leaderboard", "stop", "heatmap", "matrix", "org"):
                 shard[kind] = event
+            if kind == "resize" and "start" in shard:
+                shard["start"] = {**shard["start"], "agents": event["agents"], "total_agents": event["total_agents"]}
+            if kind == "tick" and "prices" in event and isinstance(event.get("shard"), int):
+                self._record_tick(event)  # engine shards only; the ring and matrix trade other books
             self.cond.notify_all()
+
+    def _record_tick(self, event: dict) -> None:
+        tick = event["tick"]
+        self.equity.setdefault(tick, {})[str(event.get("shard"))] = event.get("pnl", 0.0)
+        if len(self.equity) > PRICE_HISTORY:
+            del self.equity[min(self.equity)]
+        if not self.price_history or tick > self.price_history[-1]["tick"]:
+            self.price_history.append({"tick": tick, "ts": event["ts"], "prices": event["prices"]})
+
+    def prices(self) -> dict:
+        with self.cond:
+            # Only ticks every shard has reported, so a lagging shard doesn't dent the line.
+            shards = max((len(v) for v in self.equity.values()), default=0)
+            pnl = [{"tick": t, "pnl": round(sum(v.values()), 2)} for t, v in sorted(self.equity.items())
+                   if len(v) == shards]
+            return {"history": list(self.price_history), "pnl": pnl}
+
+    def org(self) -> dict:
+        """Merge every shard's latest department report into one org chart."""
+        with self.cond:
+            reports = [v["org"] for v in self.shards.values() if "org" in v]
+        merged = {d.key: {"name": d.name, "job": d.job, "agents": 0, "active": 0, "sitting_out": 0, "pnl": 0.0,
+                          "votes": [], "vote_sum": 0.0, "weight_sum": 0.0, "wins": 0, "experience": 0}
+                  for d in DEPARTMENTS}
+        for report in reports:
+            for key, dept in report["departments"].items():
+                m = merged.get(key)
+                if m is None:
+                    continue
+                m["agents"] += dept["agents"]
+                m["active"] += dept["active"]
+                m["pnl"] += dept["pnl"]
+                m["votes"].extend(dept["votes"])
+                m["sitting_out"] += dept.get("sitting_out", 0)
+                m["wins"] += dept.get("wins", 0)
+                m["experience"] += dept.get("experience", 0)
+                if dept.get("avg_weight") is not None:
+                    m["weight_sum"] += dept["avg_weight"] * dept["agents"]
+                if dept["avg_vote"] is not None:
+                    m["vote_sum"] += dept["avg_vote"] * dept["active"]
+        for m in merged.values():
+            m["avg_vote"] = round(m.pop("vote_sum") / m["active"], 4) if m["active"] else None
+            m["avg_weight"] = round(m.pop("weight_sum") / m["agents"], 4) if m["agents"] else None
+            m["skill"] = round(m["wins"] / m["experience"], 4) if m["experience"] else None
+            m["pnl"] = round(m["pnl"], 2)
+        tick = max((r["tick"] for r in reports), default=0)
+        per_department = control.read(self.events_dir)
+        return {"tick": tick, "departments": merged, "managers": manager_reports(merged),
+                "slider": {"per_department": per_department, "min": control.MIN_DEPARTMENT_SIZE,
+                           "max": control.MAX_DEPARTMENT_SIZE, "departments": len(DEPARTMENTS)}}
 
     def since(self, seq: int, timeout: float) -> list[tuple[int, dict]]:
         with self.cond:
@@ -136,6 +207,7 @@ def make_handler(hub: EventHub, auth: WebAuth | None = None):
     auth = auth or WebAuth(None, None, enabled=False)
     assets = {path: (_read(name), ctype) for path, (name, ctype) in STATIC.items()}
     index = _read("index.html")
+    cluster_page = _read("3d.html")
     login_page = _read("login.html").decode()
 
     class Handler(BaseHTTPRequestHandler):
@@ -204,14 +276,23 @@ def make_handler(hub: EventHub, auth: WebAuth | None = None):
                 page = login_page.replace("<!--ERROR-->", f'<div class="err">{error}</div>' if error else "")
                 self._send(200, page.encode(), "text/html; charset=utf-8", {"Cache-Control": "no-store"})
             elif not self._authed():
-                if path == "/":
+                if path in ("/", "/3d"):
                     self._redirect("/login")
                 else:
                     self._send(401, b'{"error":"sign in required"}', "application/json")
             elif path == "/":
                 self._send(200, index, "text/html; charset=utf-8", {"Cache-Control": "no-store"})
+            elif path == "/3d":
+                self._send(200, cluster_page, "text/html; charset=utf-8", {"Cache-Control": "no-store"})
             elif path == "/api/state":
                 self._send(200, json.dumps(hub.state()).encode(), "application/json", {"Cache-Control": "no-store"})
+            elif path == "/api/org":
+                self._send(200, json.dumps(hub.org()).encode(), "application/json", {"Cache-Control": "no-store"})
+            elif path == "/api/prices":
+                self._send(200, json.dumps(hub.prices()).encode(), "application/json", {"Cache-Control": "no-store"})
+            elif path == "/api/agents":
+                body = {"per_department": control.read(hub.events_dir)}
+                self._send(200, json.dumps(body).encode(), "application/json", {"Cache-Control": "no-store"})
             elif path == "/events":
                 self.stream()
             else:
@@ -231,6 +312,8 @@ def make_handler(hub: EventHub, auth: WebAuth | None = None):
             raw = self.rfile.read(length) if length else b""
             if path == "/logout":
                 return self._redirect("/login", {"Set-Cookie": self._cookie("", 0)})
+            if path == "/api/agents":
+                return self._set_agents(raw)
             if path != "/login" or not auth.enabled:
                 return self._send(404, b"not found", "text/plain")
             client = self._client()
@@ -242,6 +325,23 @@ def make_handler(hub: EventHub, auth: WebAuth | None = None):
                 return self._redirect("/", {"Set-Cookie": self._cookie(auth.issue(), auth.max_age)})
             auth.record_failure(client)
             self._redirect("/login?error=1")
+
+        def _set_agents(self, raw: bytes):
+            if not self._authed():
+                return self._send(401, b'{"error":"sign in required"}', "application/json")
+            # Requiring a JSON content type means a browser on another site must
+            # ask permission first (a CORS preflight), which this server never grants.
+            if self.headers.get("Content-Type", "").split(";")[0].strip() != "application/json":
+                return self._send(415, b'{"error":"send JSON"}', "application/json")
+            try:
+                per_department = json.loads(raw or b"null").get("per_department")
+                control.write(hub.events_dir, per_department)
+            except (ValueError, AttributeError) as e:
+                return self._send(400, json.dumps({"error": str(e)}).encode(), "application/json")
+            except OSError:
+                return self._send(503, b'{"error":"could not save the setting"}', "application/json")
+            body = {"per_department": per_department, "total": control.total(per_department)}
+            self._send(200, json.dumps(body).encode(), "application/json")
 
         def stream(self):
             self._headers(200, "text/event-stream", extra={"Cache-Control": "no-cache", "Connection": "close"})

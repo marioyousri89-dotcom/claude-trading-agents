@@ -41,6 +41,11 @@ class EventLog:
         line = json.dumps(event, separators=(",", ":"))
         if event_type == "start":
             self._start_line = line
+        elif event_type == "resize" and self._start_line:
+            # Keep the copied start event's headcount current after the agent slider moves.
+            start = json.loads(self._start_line)
+            start.update(agents=fields["agents"], total_agents=fields["total_agents"])
+            self._start_line = json.dumps(start, separators=(",", ":"))
         if self.stream:
             print(line, file=self.stream, flush=True)
         if self.file:

@@ -37,7 +37,7 @@ jobs:
       PYTHON_VERSION: ${{ matrix.python-version }}
     steps:
       - uses: actions/checkout@v5
-      - name: Build and start 3 engine shards + dashboard (750 agents)
+      - name: Build and start 3 engine shards + dashboard (1,400 agents)
         run: docker compose up -d --build --wait
       - name: Multi-container tests
         run: python3 -m unittest tests.containers.test_stack -v

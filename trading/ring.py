@@ -2,7 +2,7 @@
 
 Each loop:
   watcher          reads the simulated Polymarket books and token launchpad
-  analyst          (the 750-agent engine shards cover spot markets; here it
+  analyst          (the 1,400-agent engine shards cover spot markets; here it
                    counts the opportunities the specialist bots surface)
   polymarket       scans for neg-risk squeezes, cross-book arbs, maker rebates
   crypto_predictor scores new token pools for traction

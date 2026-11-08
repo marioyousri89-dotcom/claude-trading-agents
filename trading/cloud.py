@@ -1,12 +1,12 @@
 """Run the whole system in one container, for cloud hosts like Render.
 
-Starts the 3 engine shards (750 agents), the 8-bot ring and the Whole Matrix desk as child processes,
+Starts the 3 engine shards (1,400 agents), the 8-bot ring and the Whole Matrix desk as child processes,
 restarts any that crash (with backoff), and serves the dashboard in this
 process on $PORT with password login. Child output goes to stdout, so the
 host's log viewer shows the live JSON event stream.
 
 Environment: PORT (set by the host), DASHBOARD_PASSWORD, SESSION_SECRET,
-AGENT_COUNT (750), EVENTS_DIR (/events), plus anything the engine/ring accept.
+AGENT_COUNT (1400), EVENTS_DIR (/events), plus anything the engine/ring accept.
 """
 
 import os

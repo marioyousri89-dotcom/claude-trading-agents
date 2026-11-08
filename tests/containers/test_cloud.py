@@ -67,10 +67,10 @@ class CloudTests(unittest.TestCase):
         while time.time() < deadline:
             _, body = self.request("GET", "/api/state", cookie=cookie)
             state = json.loads(body)
-            if state["agents_reporting"] == 750 and {"ring", "matrix"} <= set(state["shards"]) and state["heatmap"]:
+            if state["agents_reporting"] == 1400 and {"ring", "matrix"} <= set(state["shards"]) and state["heatmap"]:
                 break
             time.sleep(1)
-        self.assertEqual(state["agents_reporting"], 750)
+        self.assertEqual(state["agents_reporting"], 1400)
         self.assertEqual(sorted(state["shards"]), ["0", "1", "2", "matrix", "ring"])
         self.assertEqual(len(state["heatmap"]), 8)
 

@@ -1,0 +1,105 @@
+"""The org chart: four departments of agents, run by three managers.
+
+Every agent belongs to one department and keeps its own workspace (its own
+notes, last vote and score). Agents share the same platforms: one market feed,
+one desk, one risk gate and one Jev gate.
+
+Managers don't trade. Each tick they read their departments' votes and report
+a summary, which the dashboard shows as the org chart and the 3D cluster view.
+"""
+
+from dataclasses import dataclass
+
+MIN_DEPARTMENT_SIZE = 350
+
+
+@dataclass(frozen=True)
+class Department:
+    key: str
+    name: str
+    role: str  # agent role the department staffs
+    job: str
+
+
+@dataclass(frozen=True)
+class Manager:
+    key: str
+    name: str
+    title: str
+    departments: tuple[str, ...]
+
+
+DEPARTMENTS = (
+    Department("trend", "Trend Trading", "trader", "Momentum, moving-average cross and breakout traders"),
+    Department("reversion", "Reversion Trading", "trader", "Mean-reversion traders who fade stretched moves"),
+    Department("research", "Research", "analyst", "Regime analysts: trending or choppy, so the desk knows whom to trust"),
+    Department("risk", "Risk", "risk", "Volatility monitors who vote to shrink exposure"),
+)
+
+MANAGERS = (
+    Manager("atlas", "Atlas", "Head of Trading", ("trend", "reversion")),
+    Manager("sage", "Sage", "Head of Research", ("research",)),
+    Manager("sentinel", "Sentinel", "Head of Risk", ("risk",)),
+)
+
+DEPARTMENT_KEYS = tuple(d.key for d in DEPARTMENTS)
+
+
+def department_sizes(count: int) -> dict[str, int]:
+    """Split `count` agents evenly across the departments (earlier ones take the remainder)."""
+    base, extra = divmod(count, len(DEPARTMENTS))
+    return {d.key: base + (1 if i < extra else 0) for i, d in enumerate(DEPARTMENTS)}
+
+
+def summarize(agents, votes: dict[str, float]) -> dict[str, dict]:
+    """Per-department report: headcount, active voters, average vote, P&L, brains and each agent's latest vote.
+
+    `votes` maps agent_id to the vote it cast this tick. Agents still warming up
+    (not enough price history yet) or whose brain chose to sit out report None.
+    """
+    report = {d.key: {"agents": 0, "active": 0, "sitting_out": 0, "vote_sum": 0.0, "pnl": 0.0, "weight_sum": 0.0,
+                      "wins": 0, "experience": 0, "votes": []} for d in DEPARTMENTS}
+    for a in agents:
+        dept = report[a.department]
+        dept["agents"] += 1
+        dept["pnl"] += a.pnl
+        dept["weight_sum"] += a.brain.weight
+        dept["wins"] += a.brain.wins
+        dept["experience"] += a.brain.experience
+        if a.brain.sitting_out:
+            dept["sitting_out"] += 1
+        v = votes.get(a.agent_id)
+        if v is None:
+            dept["votes"].append(None)
+            continue
+        dept["active"] += 1
+        dept["vote_sum"] += v
+        dept["votes"].append(round(v, 2))
+    for dept in report.values():
+        dept["avg_vote"] = round(dept.pop("vote_sum") / dept["active"], 4) if dept["active"] else None
+        dept["avg_weight"] = round(dept.pop("weight_sum") / dept["agents"], 4) if dept["agents"] else None
+        dept["pnl"] = round(dept["pnl"], 2)
+    return report
+
+
+def manager_reports(departments: dict[str, dict]) -> list[dict]:
+    """What each manager tells the desk, read off its departments' reports."""
+    out = []
+    for m in MANAGERS:
+        own = [departments[k] for k in m.departments if k in departments]
+        agents = sum(d["agents"] for d in own)
+        active = sum(d["active"] for d in own)
+        pnl = round(sum(d["pnl"] for d in own), 2)
+        if m.key == "atlas":
+            trend, rev = departments.get("trend", {}), departments.get("reversion", {})
+            call = ("favour trend" if abs(trend.get("avg_vote") or 0) >= abs(rev.get("avg_vote") or 0)
+                    else "favour reversion")
+        elif m.key == "sage":
+            regime = departments.get("research", {}).get("avg_vote")
+            call = "warming up" if regime is None else ("trending market" if regime > 0 else "choppy market")
+        else:
+            exposure = departments.get("risk", {}).get("avg_vote")
+            call = "warming up" if exposure is None else f"run {exposure:.0%} of normal size"
+        out.append({"manager": m.name, "title": m.title, "departments": list(m.departments),
+                    "agents": agents, "active": active, "pnl": pnl, "call": call})
+    return out

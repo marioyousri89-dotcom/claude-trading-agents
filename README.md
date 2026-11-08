@@ -1,20 +1,53 @@
 # claude-trading-agents
 
-A team of **750 paper-trading agents** running in several containers, with live logs, behind a login gate.
+A team of **1,400 paper-trading agents** in four departments, run by three managers, spread over several
+containers, with live logs and a 3D view, behind a login gate.
 
 ## The agent team
 
-| Role | Count | What it does |
-|---|---|---|
-| Traders | 600 | Momentum, moving-average cross, breakout and mean-reversion strategies with varied look-back windows, spread across 10 symbols |
-| Analysts | 120 | Judge each symbol's regime (trending vs choppy) and decide whether the desk trusts trend-followers or mean-reversion traders |
-| Risk monitors | 30 | Watch volatility and vote to shrink overall exposure |
+| Department | Agents | Manager | What it does |
+|---|---|---|---|
+| Trend Trading | 350 | **Atlas**, Head of Trading | Momentum, moving-average cross and breakout traders |
+| Reversion Trading | 350 | **Atlas** | Mean-reversion traders who fade stretched moves |
+| Research | 350 | **Sage**, Head of Research | Regime analysts: they decide whether the desk trusts trend or reversion traders |
+| Risk | 350 | **Sentinel**, Head of Risk | Volatility monitors who vote to shrink overall exposure |
 
-A coordinator (`trading/desk.py`) combines the votes into one order per symbol. The hard limits in
-`trading/risk.py` have the final say: order size, position size, gross exposure, and a drawdown limit
-that halts new risk. Every agent keeps a virtual P&L, which feeds a leaderboard.
+The departments are defined in `trading/org.py`. Agents are spread across 10 symbols with varied look-back
+windows. `AGENT_COUNT` splits evenly across the departments.
+
+**Every agent has its own brain** (`trading/brain.py`) and its own workspace:
+- After each tick the brain scores the agent's last call against what the simulated market did, and updates
+  its trust in its own strategy.
+- Trusted agents press their signal harder. Doubtful ones soften it. An agent that keeps losing **sits out
+  on its own**, but keeps scoring its signal in the background until it earns its way back.
+- Each brain has its own learning speed and sit-out level, and its learning rate slows with experience.
+- Traders learn from their own P&L. Analysts learn from whether trends continued. Risk monitors learn from
+  whether they cut size before big moves.
+
+The managers read their departments every 5 ticks and report a call ("favour trend", "choppy market",
+"run 96% of normal size"). A coordinator (`trading/desk.py`) combines the votes into one order per symbol.
+The hard limits in `trading/risk.py` have the final say: order size, position size, gross exposure, and a
+drawdown limit that halts new risk.
 
 **Paper mode only.** The market is simulated and fills are fake. No real orders are ever sent.
+
+## 3D cluster view and agent slider
+
+Open **http://127.0.0.1:8080/3d**:
+- Each department is a cluster with one dot per agent. Green means buy, trending or full size. Red means sell,
+  choppy or shrink. Grey means warming up or sitting out.
+- The managers float above their departments.
+- Pulses run along the pipeline as it works: market feed, departments, desk, risk gate, Jev gate, paper broker.
+- Drag to rotate and scroll to zoom.
+- The side panel shows each manager's call and each department's brains (average trust, share of calls right,
+  how many are sitting out).
+- There are TradingView (lightweight-charts) charts for every symbol's price and the session P&L.
+- **The slider sets the agents per department, from 350 to 2,500 (up to 10,000 agents in all).** The dashboard
+  saves the setting to `control.json` in the shared events volume. Every engine shard resizes within about
+  10 ticks without restarting, and agents that stay keep their brains.
+
+On one CPU a tick takes about 35 ms with 1,400 agents and about 105 ms with 10,000, well inside the 1.5 s
+loop target.
 
 ## ATS Matrix V2: Dual-Brain and the 8-bot ring
 
@@ -28,7 +61,7 @@ trades).
 | **Brain Beta** (reactive) | Times every loop against `execution_loop_target_seconds` (1.5s) and resets Jev's per-loop path budget (`max_categorical_paths`, 255). |
 | **Jev** (typed-JSON gate) | `trading/jev.py`: every proposal from every bot must match a fixed contract. That means exact fields and types, finite positive values, the $100k trade cap, 0.5% slippage tolerance and $50k Polymarket depth. Only trading bots may propose. Rejections carry reason codes. |
 | **Watcher** | Reads the simulated Polymarket books and token launchpad |
-| **Analyst** | The 750-agent engine shards (spot markets) |
+| **Analyst** | The 1,400-agent engine shards (spot markets) |
 | **Risk Gate** | 5% global drawdown halt: after a breach, only exits are allowed |
 | **Executor** | Sends every leg through Jev. A multi-leg trade executes only if every leg is approved. |
 | **Reporter** | JSON event stream, signal heatmap, Jev desk |
@@ -106,13 +139,14 @@ Changing `DASHBOARD_PASSWORD` or `SESSION_SECRET` in Render signs every device o
 ## Running it
 
 ```sh
-docker compose up --build        # 3 engines x 250 agents + 8-bot ring + Whole Matrix + dashboard
+docker compose up --build        # 3 engines (1,400 agents) + 8-bot ring + Whole Matrix + dashboard
 docker compose logs -f           # live logs from every container
 open http://127.0.0.1:8080       # live dashboard (bound to localhost only)
+open http://127.0.0.1:8080/3d    # 3D cluster view, charts and the agent slider
 docker compose down -v
 ```
 
-Settings (environment variables): `AGENT_COUNT` (default 750), `TICK_SECONDS` (0.5), `TICKS` (0 = run
+Settings (environment variables): `AGENT_COUNT` (default 1400), `TICK_SECONDS` (0.5), `TICKS` (0 = run
 forever) and `PYTHON_VERSION` (base image, default 3.13).
 
 Without Docker, run a single process with all agents: `python -m trading.engine`. Run the gated
@@ -124,9 +158,9 @@ version with `python run_agent.py`.
 
 | Job | Matrix | What it checks |
 |---|---|---|
-| `test` | Linux, macOS, Windows × Python 3.10–3.14 (15 jobs) | Unit tests, including a full 750-agent run and a 3-shard dashboard test |
-| `cloud` | The single-container image Render runs | Refuses to start without a password, then runs all 750 agents and the ring in one container and checks login, data, health check, manifest and app icon |
-| `containers` | Python 3.12 and 3.13 images | Builds and starts all 5 containers, then checks that all 750 agents report, every shard and the ring keep ticking, the live log stream reaches all of them, and the heatmap and Jev desk are populated. Container logs are printed at the end of each job. |
+| `test` | Linux, macOS, Windows × Python 3.10–3.14 (15 jobs) | Unit tests, including a full 1,400-agent run, agent brains, the slider, and 3-shard dashboard tests |
+| `cloud` | The single-container image Render runs | Refuses to start without a password, then runs all 1,400 agents and the ring in one container and checks login, data, health check, manifest and app icon |
+| `containers` | Python 3.12 and 3.13 images | Builds and starts all 5 containers, then checks that all 1,400 agents report, every shard and the ring keep ticking, the live log stream reaches all of them, the heatmap and Jev desk are populated, and the departments, managers and 3D view are served. Container logs are printed at the end of each job. |
 
 GitHub's macOS and Windows runners can't run Linux containers, so container tests run on Linux. macOS
 and Windows cover the same engine through the unit tests.

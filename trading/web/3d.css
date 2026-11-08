@@ -1,0 +1,29 @@
+:root{--bg:#0b0d12;--fg:#e6e6e6;--mut:#8a8f98;--up:#3fb950;--dn:#f85149;--card:#151922;--line:#232836;--acc:#58a6ff}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:13px/1.45 ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif}
+header{padding:10px 16px;border-bottom:1px solid var(--line);display:flex;gap:12px;align-items:baseline;flex-wrap:wrap}
+header a{color:var(--acc)}
+.mut{color:var(--mut)}.up{color:var(--up)}.dn{color:var(--dn)}
+main{display:grid;grid-template-columns:minmax(0,1fr) 380px;gap:12px;padding:12px 16px}
+@media (max-width:900px){main{grid-template-columns:minmax(0,1fr)}}
+#scene{position:relative;height:72vh;min-height:420px;background:radial-gradient(ellipse at center,#121826 0%,#0b0d12 70%);
+ border:1px solid var(--line);border-radius:8px;overflow:hidden;cursor:grab;touch-action:none}
+#scene canvas{display:block}
+.label{position:absolute;transform:translate(-50%,-50%);pointer-events:none;font-size:12px;white-space:nowrap;
+ text-shadow:0 0 4px #000,0 0 2px #000;text-align:center}
+.label b{font-size:13px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-bottom:12px}
+.card h3{margin:0 0 6px;font-size:13px}
+.row{display:flex;justify-content:space-between;gap:8px;padding:3px 0;border-bottom:1px solid var(--line)}
+.row:last-child{border-bottom:0}
+select{background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:4px;padding:2px 6px}
+#price,#pnl{height:200px}
+#legend{position:absolute;left:10px;bottom:8px;font-size:11px}
+.dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin:0 4px 0 10px;vertical-align:middle}
+input[type=range]{accent-color:var(--acc)}
+#err{display:none;padding:8px 16px;color:var(--dn)}
+.up-dot{background:#3fb950}.dn-dot{background:#f85149}.idle-dot{background:#4a505c}
+#slider{width:100%}
+.right{text-align:right}
+header form{margin-left:auto}
+header button{background:transparent;color:var(--mut);border:1px solid var(--line);border-radius:4px;padding:2px 8px}
