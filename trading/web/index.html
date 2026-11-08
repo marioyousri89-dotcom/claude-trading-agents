@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>ATS Matrix</title>
+<meta name="theme-color" content="#0f1115">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="ATS Matrix">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icons/favicon-32.png" sizes="32x32">
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+<link rel="stylesheet" href="/app.css">
+</head><body>
+<header><b>ATS Matrix</b> <span class="mut">paper mode · <span id="total">0</span> agents reporting · <span id="status">connecting…</span></span>
+<form method="post" action="/logout"><button type="submit">Sign out</button></form></header>
+<div id="shards"></div>
+<div id="hud"><div class="card"><b>Signal heatmap</b> <span class="mut">8-bot ring</span><div id="heat"></div></div>
+<div class="card"><b>Jev decision desk</b><div id="desk" class="mut">waiting…</div></div></div>
+<div id="matrixpanel" class="card" hidden><b>Whole Matrix</b> <span class="mut" id="matrixsub"></span>
+<div class="tbl-wrap"><table id="mtable"></table></div><div id="pairs"></div></div>
+<div id="log"></div>
+<script src="/app.js"></script>
+</body></html>
