@@ -1,21 +1,26 @@
 """Live log dashboard. Tails every shard's events-*.jsonl and streams them to the browser.
 
 Endpoints:
-  /             live log page
+  /             live dashboard (installable as a home-screen app)
   /3d           3D cluster view: every department, manager and pipeline stage live,
-                with TradingView price and equity charts
+                with TradingView price and P&L charts and the agent slider
   /api/org      departments and manager reports merged across shards (JSON)
-  /api/prices   recent price and equity history for the charts (JSON)
+  /api/prices   recent price and P&L history for the charts (JSON)
   /api/agents   GET the agent slider's setting; POST {"per_department": n} to resize
                 every shard (JSON only, so other sites can't post to it)
   /events       Server-Sent Events stream of new events
   /api/state    latest tick, leaderboard, agent count per shard, ring heatmap
                 and the Jev decision desk totals (JSON)
   /health       200 once at least one shard is reporting
+  /login        password sign-in when the dashboard is reachable from the internet
+
+When auth is on (see trading/webauth.py), /, /3d, /events and the /api/
+endpoints need a signed session cookie; /health then reports only {"ok": ...}.
 """
 
 import json
 import os
+import urllib.parse
 import threading
 import time
 from collections import deque
@@ -23,11 +28,33 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from . import control
-from .cluster_page import CLUSTER_PAGE
 from .org import DEPARTMENTS, manager_reports
+from .webauth import COOKIE, WebAuth
 
 HISTORY = 500
 PRICE_HISTORY = 600
+WEB = Path(__file__).resolve().parent / "web"
+# Every file the server will ever return, so no request path can reach anything else.
+STATIC = {
+    "/app.css": ("app.css", "text/css; charset=utf-8"),
+    "/app.js": ("app.js", "text/javascript; charset=utf-8"),
+    "/3d.css": ("3d.css", "text/css; charset=utf-8"),
+    "/3d.js": ("3d.js", "text/javascript; charset=utf-8"),
+    # Vendored so the strict CSP (scripts only from this site) holds and the cloud app needs no CDN.
+    "/vendor/three.min.js": ("vendor/three.min.js", "text/javascript; charset=utf-8"),
+    "/vendor/lightweight-charts.js": ("vendor/lightweight-charts.js", "text/javascript; charset=utf-8"),
+    "/sw.js": ("sw.js", "text/javascript; charset=utf-8"),
+    "/manifest.webmanifest": ("manifest.webmanifest", "application/manifest+json"),
+    "/offline.html": ("offline.html", "text/html; charset=utf-8"),
+    "/icons/icon-192.png": ("icons/icon-192.png", "image/png"),
+    "/icons/icon-512.png": ("icons/icon-512.png", "image/png"),
+    "/icons/icon-maskable-512.png": ("icons/icon-maskable-512.png", "image/png"),
+    "/icons/apple-touch-icon.png": ("icons/apple-touch-icon.png", "image/png"),
+    "/icons/favicon-32.png": ("icons/favicon-32.png", "image/png"),
+}
+CSP = ("default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; "
+       "manifest-src 'self'; worker-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+MAX_FORM_BYTES = 4096
 
 
 class EventHub:
@@ -37,26 +64,47 @@ class EventHub:
         self.seq = 0
         self.shards: dict[str, dict] = {}
         self.cond = threading.Condition()
-        self.offsets: dict[Path, int] = {}
+        self.offsets: dict[Path, tuple[int, int]] = {}  # path -> (inode, offset)
         # Every engine shard sees the same market, so one shard's ticks give the price history.
         self.price_history: deque[dict] = deque(maxlen=PRICE_HISTORY)
         self.equity: dict[int, dict[str, float]] = {}
 
     def poll_files(self) -> None:
         for path in sorted(self.events_dir.glob("events-*.jsonl")):
-            offset = self.offsets.get(path, 0)
             with open(path, "rb") as f:
+                st = os.fstat(f.fileno())
+                inode, offset = self.offsets.get(path, (st.st_ino, 0))
+                if inode != st.st_ino or st.st_size < offset:
+                    # The engine rotated the file. Finish the old one (now <name>.1)
+                    # first so no events are lost, then read the new one from the top.
+                    self._finish_rotated(path, inode, offset)
+                    offset = 0
                 f.seek(offset)
                 chunk = f.read()
             end = chunk.rfind(b"\n") + 1  # only consume complete lines
             if not end:
+                self.offsets[path] = (st.st_ino, offset)
                 continue
-            self.offsets[path] = offset + end
-            for line in chunk[:end].splitlines():
-                try:
-                    self.add(json.loads(line))
-                except ValueError:
-                    continue
+            self.offsets[path] = (st.st_ino, offset + end)
+            self._consume(chunk[:end])
+
+    def _finish_rotated(self, path: Path, inode: int, offset: int) -> None:
+        backup = path.with_name(path.name + ".1")
+        try:
+            with open(backup, "rb") as f:
+                if os.fstat(f.fileno()).st_ino != inode:
+                    return  # rotated more than once since the last poll; that tail is gone
+                f.seek(offset)
+                self._consume(f.read())
+        except FileNotFoundError:
+            pass
+
+    def _consume(self, chunk: bytes) -> None:
+        for line in chunk.splitlines():
+            try:
+                self.add(json.loads(line))
+            except ValueError:
+                continue
 
     def add(self, event: dict) -> None:
         with self.cond:
@@ -64,12 +112,12 @@ class EventHub:
             self.events.append((self.seq, event))
             shard = self.shards.setdefault(str(event.get("shard", "?")), {})
             kind = event.get("type")
-            if kind in ("start", "tick", "leaderboard", "stop", "heatmap", "org"):
+            if kind in ("start", "tick", "leaderboard", "stop", "heatmap", "matrix", "org"):
                 shard[kind] = event
             if kind == "resize" and "start" in shard:
                 shard["start"] = {**shard["start"], "agents": event["agents"], "total_agents": event["total_agents"]}
-            if kind == "tick" and "prices" in event:
-                self._record_tick(event)
+            if kind == "tick" and "prices" in event and isinstance(event.get("shard"), int):
+                self._record_tick(event)  # engine shards only; the ring and matrix trade other books
             self.cond.notify_all()
 
     def _record_tick(self, event: dict) -> None:
@@ -151,120 +199,153 @@ class EventHub:
             time.sleep(interval)
 
 
-PAGE = """<!doctype html>
-<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Trading Agents Live</title>
-<style>
-:root{--bg:#0f1115;--fg:#e6e6e6;--mut:#8a8f98;--up:#3fb950;--dn:#f85149;--card:#171a21}
-body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.4 ui-monospace,Menlo,Consolas,monospace}
-header{padding:12px 16px;border-bottom:1px solid #222}
-#shards{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;padding:12px 16px}
-.card{background:var(--card);padding:10px;border-radius:6px}
-.mut{color:var(--mut)}.up{color:var(--up)}.dn{color:var(--dn)}
-#hud{display:grid;grid-template-columns:2fr 1fr;gap:8px;padding:0 16px 12px}
-@media (max-width:700px){#hud{grid-template-columns:1fr}}
-#heat{display:grid;grid-template-columns:repeat(4,1fr);gap:4px}
-.cell{padding:8px 4px;border-radius:4px;text-align:center;font-size:12px}
-#log{padding:0 16px 16px;white-space:pre-wrap;word-break:break-all}
-#log div{border-bottom:1px solid #1d2028;padding:2px 0}
-</style></head><body>
-<header><b>Trading Agents</b> <span class="mut">paper mode · <span id="total">0</span> agents reporting</span>
- · <a href="/3d" style="color:#58a6ff">3D cluster view</a></header>
-<div id="shards"></div>
-<div id="hud"><div class="card"><b>Signal heatmap</b> <span class="mut">8-bot ring</span><div id="heat"></div></div>
-<div class="card"><b>Jev decision desk</b><div id="desk" class="mut">waiting…</div></div></div>
-<div id="log"></div>
-<script>
-const log=document.getElementById('log'),shards={};let heat={};
-function color(v){const a=Math.min(1,Math.abs(v));return v>=0?`rgba(63,185,80,${.15+a*.6})`:`rgba(248,81,73,${.15+a*.6})`}
-function renderHud(){document.getElementById('heat').innerHTML=Object.entries(heat).map(([b,v])=>
- `<div class="cell" style="background:${color(v)}">${b.replace('_',' ')}<br><b>${v.toFixed(2)}</b></div>`).join('');
- let ap=0,rj=0,pnl=0;for(const s of Object.values(shards)){ap+=s.jev?.approved||0;rj+=s.jev?.rejected||0;pnl+=s.pnl||0}
- document.getElementById('desk').innerHTML=`requests ${ap+rj}<br><span class="up">approved ${ap}</span> · <span class="dn">rejected ${rj}</span><br>`+
- `approval ${ap+rj?(100*ap/(ap+rj)).toFixed(1):'–'}%<br>session P&amp;L <span class="${pnl>=0?'up':'dn'}">${pnl.toFixed(2)}</span>`}
-function render(){const el=document.getElementById('shards');el.innerHTML='';let total=0;
- for(const [id,s] of Object.entries(shards)){total+=s.agents||0;const pnl=s.pnl||0;
-  el.insertAdjacentHTML('beforeend',`<div class="card"><b>${id==='ring'?'8-bot ring':'shard '+id}</b> <span class="mut">${id==='ring'?'polymarket + predictor':(s.agents||0)+' agents'}</span><br>
-  tick ${s.tick||0} · equity ${(s.equity||0).toFixed(2)}<br><span class="${pnl>=0?'up':'dn'}">pnl ${pnl.toFixed(2)}</span>${s.halted?' <span class="dn">HALTED</span>':''}</div>`)}
- document.getElementById('total').textContent=total;renderHud()}
-fetch('/api/state').then(r=>r.json()).then(st=>{for(const [id,v] of Object.entries(st.shards)){
- const s=shards[id]=shards[id]||{};if(v.start)s.agents=v.start.agents;if(v.tick&&!s.tick)Object.assign(s,v.tick)}heat=st.heatmap||{};render()});
-const es=new EventSource('/events');
-es.onmessage=m=>{const e=JSON.parse(m.data),s=shards[e.shard]=shards[e.shard]||{};
- if(e.type==='start')s.agents=e.agents;
- if(e.type==='heatmap'){heat=e.bots;renderHud();return}
- if(e.type==='tick'){Object.assign(s,{tick:e.tick,equity:e.equity,pnl:e.pnl,halted:e.halted,jev:e.jev});render();if(e.orders===0)return}
- const d=document.createElement('div');d.textContent=new Date(e.ts*1000).toLocaleTimeString()+'  ['+e.shard+'] '+e.type+'  '+
-  JSON.stringify(Object.fromEntries(Object.entries(e).filter(([k])=>!['ts','shard','type'].includes(k))));
- log.prepend(d);while(log.children.length>300)log.lastChild.remove()};
-</script></body></html>"""
+def _read(name: str) -> bytes:
+    return (WEB / name).read_bytes()
 
 
-def make_handler(hub: EventHub):
+def make_handler(hub: EventHub, auth: WebAuth | None = None):
+    auth = auth or WebAuth(None, None, enabled=False)
+    assets = {path: (_read(name), ctype) for path, (name, ctype) in STATIC.items()}
+    index = _read("index.html")
+    cluster_page = _read("3d.html")
+    login_page = _read("login.html").decode()
+
     class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+        timeout = 60  # close idle or stalled connections (e.g. a request sent byte by byte)
+
         def log_message(self, *args):
             pass
 
-        def _send(self, status: int, body: bytes, ctype: str):
+        def _headers(self, status: int, ctype: str, length: int | None = None, extra: dict | None = None):
             self.send_response(status)
             self.send_header("Content-Type", ctype)
-            self.send_header("Content-Length", str(len(body)))
+            if length is not None:
+                self.send_header("Content-Length", str(length))
             self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("X-Frame-Options", "DENY")
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.send_header("Content-Security-Policy", CSP)
+            if auth.enabled:
+                self.send_header("Strict-Transport-Security", "max-age=31536000")
+            for k, v in (extra or {}).items():
+                self.send_header(k, v)
             self.end_headers()
+
+        def _send(self, status: int, body: bytes, ctype: str, extra: dict | None = None):
+            self._headers(status, ctype, len(body), extra)
             self.wfile.write(body)
 
+        def _redirect(self, to: str, extra: dict | None = None):
+            self._send(303, b"", "text/plain", {"Location": to, **(extra or {})})
+
+        def _cookie(self, value: str, max_age: int) -> str:
+            return f"{COOKIE}={value}; Path=/; Max-Age={max_age}; HttpOnly; Secure; SameSite=Lax"
+
+        def _session(self) -> str | None:
+            for part in self.headers.get("Cookie", "").split(";"):
+                name, _, value = part.strip().partition("=")
+                if name == COOKIE:
+                    return value
+            return None
+
+        def _authed(self) -> bool:
+            return auth.valid(self._session())
+
+        def _client(self) -> str:
+            # Behind Render's proxy the client address is the first X-Forwarded-For entry.
+            forwarded = self.headers.get("X-Forwarded-For", "")
+            return forwarded.split(",")[0].strip() or self.client_address[0]
+
         def do_GET(self):
-            if self.path == "/":
-                self._send(200, PAGE.encode(), "text/html; charset=utf-8")
-            elif self.path == "/health":
+            path = urllib.parse.urlsplit(self.path).path
+            if path in assets:
+                body, ctype = assets[path]
+                self._send(200, body, ctype, {"Cache-Control": "no-cache" if path == "/sw.js" else "public, max-age=3600"})
+            elif path == "/health":
                 state = hub.state()
                 ok = state["agents_reporting"] > 0
-                self._send(200 if ok else 503, json.dumps({"ok": ok, **state}).encode(), "application/json")
-            elif self.path == "/3d":
-                self._send(200, CLUSTER_PAGE.encode(), "text/html; charset=utf-8")
-            elif self.path == "/api/org":
-                self._send(200, json.dumps(hub.org()).encode(), "application/json")
-            elif self.path == "/api/agents":
-                self._send(200, json.dumps({"per_department": control.read(hub.events_dir)}).encode(),
-                           "application/json")
-            elif self.path == "/api/prices":
-                self._send(200, json.dumps(hub.prices()).encode(), "application/json")
-            elif self.path == "/api/state":
-                self._send(200, json.dumps(hub.state()).encode(), "application/json")
-            elif self.path == "/events":
+                body = {"ok": ok} if auth.enabled else {"ok": ok, **state}
+                self._send(200 if ok else 503, json.dumps(body).encode(), "application/json")
+            elif path == "/login":
+                if not auth.enabled or self._authed():
+                    return self._redirect("/")
+                query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+                message = {"1": "Wrong password.", "locked": "Too many attempts. Try again in 15 minutes."}
+                error = message.get(query.get("error", [""])[0], "")
+                page = login_page.replace("<!--ERROR-->", f'<div class="err">{error}</div>' if error else "")
+                self._send(200, page.encode(), "text/html; charset=utf-8", {"Cache-Control": "no-store"})
+            elif not self._authed():
+                if path in ("/", "/3d"):
+                    self._redirect("/login")
+                else:
+                    self._send(401, b'{"error":"sign in required"}', "application/json")
+            elif path == "/":
+                self._send(200, index, "text/html; charset=utf-8", {"Cache-Control": "no-store"})
+            elif path == "/3d":
+                self._send(200, cluster_page, "text/html; charset=utf-8", {"Cache-Control": "no-store"})
+            elif path == "/api/state":
+                self._send(200, json.dumps(hub.state()).encode(), "application/json", {"Cache-Control": "no-store"})
+            elif path == "/api/org":
+                self._send(200, json.dumps(hub.org()).encode(), "application/json", {"Cache-Control": "no-store"})
+            elif path == "/api/prices":
+                self._send(200, json.dumps(hub.prices()).encode(), "application/json", {"Cache-Control": "no-store"})
+            elif path == "/api/agents":
+                body = {"per_department": control.read(hub.events_dir)}
+                self._send(200, json.dumps(body).encode(), "application/json", {"Cache-Control": "no-store"})
+            elif path == "/events":
                 self.stream()
             else:
                 self._send(404, b"not found", "text/plain")
 
         def do_POST(self):
-            if self.path != "/api/agents":
-                self._send(404, b"not found", "text/plain")
-                return
+            path = urllib.parse.urlsplit(self.path).path
+            # Consume the body first so the connection stays in sync, and never
+            # read more than a login form needs.
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+            except ValueError:
+                length = MAX_FORM_BYTES + 1
+            if length > MAX_FORM_BYTES or length < 0:
+                self.close_connection = True
+                return self._send(413, b"too large", "text/plain", {"Connection": "close"})
+            raw = self.rfile.read(length) if length else b""
+            if path == "/logout":
+                return self._redirect("/login", {"Set-Cookie": self._cookie("", 0)})
+            if path == "/api/agents":
+                return self._set_agents(raw)
+            if path != "/login" or not auth.enabled:
+                return self._send(404, b"not found", "text/plain")
+            client = self._client()
+            if not auth.allowed(client):
+                return self._redirect("/login?error=locked")
+            form = urllib.parse.parse_qs(raw.decode("utf-8", "replace"))
+            if auth.check_password(form.get("password", [""])[0]):
+                auth.record_success(client)
+                return self._redirect("/", {"Set-Cookie": self._cookie(auth.issue(), auth.max_age)})
+            auth.record_failure(client)
+            self._redirect("/login?error=1")
+
+        def _set_agents(self, raw: bytes):
+            if not self._authed():
+                return self._send(401, b'{"error":"sign in required"}', "application/json")
             # Requiring a JSON content type means a browser on another site must
             # ask permission first (a CORS preflight), which this server never grants.
             if self.headers.get("Content-Type", "").split(";")[0].strip() != "application/json":
-                self._send(415, b'{"error":"send JSON"}', "application/json")
-                return
+                return self._send(415, b'{"error":"send JSON"}', "application/json")
             try:
-                length = int(self.headers.get("Content-Length", 0))
-                if not 0 < length <= 1024:
-                    raise ValueError("body too large or empty")
-                per_department = json.loads(self.rfile.read(length)).get("per_department")
+                per_department = json.loads(raw or b"null").get("per_department")
                 control.write(hub.events_dir, per_department)
             except (ValueError, AttributeError) as e:
-                self._send(400, json.dumps({"error": str(e)}).encode(), "application/json")
-                return
+                return self._send(400, json.dumps({"error": str(e)}).encode(), "application/json")
             except OSError:
-                self._send(503, b'{"error":"could not save the setting"}', "application/json")
-                return
+                return self._send(503, b'{"error":"could not save the setting"}', "application/json")
             body = {"per_department": per_department, "total": control.total(per_department)}
             self._send(200, json.dumps(body).encode(), "application/json")
 
         def stream(self):
-            self.send_response(200)
-            self.send_header("Content-Type", "text/event-stream")
-            self.send_header("Cache-Control", "no-cache")
-            self.end_headers()
+            self._headers(200, "text/event-stream", extra={"Cache-Control": "no-cache", "Connection": "close"})
+            self.close_connection = True
             # Replay recent history so a fresh page isn't empty, then follow live.
             seq = max(0, hub.seq - 100)
             try:
@@ -281,17 +362,22 @@ def make_handler(hub: EventHub):
     return Handler
 
 
+def serve(events_dir: Path, host: str, port: int, auth: WebAuth) -> ThreadingHTTPServer:
+    hub = EventHub(events_dir)
+    threading.Thread(target=hub.run_tailer, daemon=True).start()
+    server = ThreadingHTTPServer((host, port), make_handler(hub, auth))
+    server.daemon_threads = True
+    mode = "password login on" if auth.enabled else "no login (local only)"
+    print(f"dashboard on http://{host}:{port} reading {events_dir} ({mode})", flush=True)
+    return server
+
+
 def main() -> None:
     events_dir = Path(os.environ.get("EVENTS_DIR", "events"))
     events_dir.mkdir(parents=True, exist_ok=True)
     host = os.environ.get("DASHBOARD_HOST", "127.0.0.1")
-    port = int(os.environ.get("DASHBOARD_PORT", 8080))
-    hub = EventHub(events_dir)
-    threading.Thread(target=hub.run_tailer, daemon=True).start()
-    server = ThreadingHTTPServer((host, port), make_handler(hub))
-    server.daemon_threads = True
-    print(f"dashboard on http://{host}:{port} reading {events_dir}", flush=True)
-    server.serve_forever()
+    port = int(os.environ.get("DASHBOARD_PORT") or os.environ.get("PORT") or 8080)
+    serve(events_dir, host, port, WebAuth.from_env(host)).serve_forever()
 
 
 if __name__ == "__main__":

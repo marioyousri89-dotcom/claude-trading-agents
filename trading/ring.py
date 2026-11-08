@@ -34,6 +34,10 @@ from .vault import Vault
 
 CAPITAL_USDC = 1_000_000.0
 STRATEGIES = ("neg_risk_squeeze", "cross_book_arb", "maker_rebate", "new_token_traction")
+# Simulated markets resolve this many ticks after an arbitrage is opened. Until
+# then its cost stays locked and its P&L is unrealised (real Polymarket
+# markets can take days or weeks to resolve).
+RESOLVE_TICKS = 600
 
 
 def require_paper(mode: str) -> None:
@@ -54,7 +58,9 @@ class Ring:
         self.polymarket = PolymarketBot(cfg, seed)
         self.predictor = CryptoPredictor(cfg)
         self.vault = Vault("paper")
-        self.pnl = {s: 0.0 for s in STRATEGIES}
+        self.pnl = {s: 0.0 for s in STRATEGIES}  # realised only
+        self.locked: list[tuple[int, float, float, str]] = []  # (resolve_tick, cost, pnl, strategy)
+        self.capital_rejects = 0
         self.peak_equity = CAPITAL_USDC
         self.halted = False
         self.ticks = 0
@@ -66,7 +72,34 @@ class Ring:
         return self.beta.jev
 
     def equity(self, pools) -> float:
+        # Pending arbitrage P&L is not counted until the market resolves.
         return CAPITAL_USDC + sum(self.pnl.values()) + self.predictor.unrealized(pools)
+
+    def deployed(self) -> float:
+        arb = sum(cost for _, cost, _, _ in self.locked)
+        tokens = sum(p.qty * p.entry for p in self.predictor.positions.values())
+        return arb + tokens
+
+    def free_capital(self) -> float:
+        return CAPITAL_USDC + sum(self.pnl.values()) - self.deployed()
+
+    def _settle(self) -> None:
+        still_open = []
+        for resolve_tick, cost, pnl, strategy in self.locked:
+            if resolve_tick <= self.ticks:
+                self.pnl[strategy] += pnl
+                self.log.emit("settle", strategy=strategy, cost=round(cost, 2), realized_pnl=round(pnl, 2))
+            else:
+                still_open.append((resolve_tick, cost, pnl, strategy))
+        self.locked = still_open
+
+    def _reject_for_capital(self, strategy: str, cost: float) -> bool:
+        if cost <= self.free_capital():
+            return False
+        self.capital_rejects += 1
+        self.log.emit("risk", strategy=strategy, reason="insufficient free capital", cost=round(cost, 2),
+                      free=round(self.free_capital(), 2))
+        return True
 
     def step(self) -> None:
         self.ticks += 1
@@ -76,6 +109,7 @@ class Ring:
         # watcher
         snap = self.market.tick()
         pools = self.launchpad.tick(keep=set(self.predictor.positions))
+        self._settle()
 
         # risk gate: global drawdown halt
         equity = self.equity(pools)
@@ -88,6 +122,10 @@ class Ring:
         opportunities = [] if self.halted else self.polymarket.scan(snap, weights)
         approved_trades = 0
         for opp in opportunities:
+            # Maker quotes rest on the book; their inventory is not modelled.
+            cost = 0.0 if opp.strategy == "maker_rebate" else sum(l["qty"] * l["price"] for l in opp.legs)
+            if cost and self._reject_for_capital(opp.strategy, cost):
+                continue
             decisions = [self.jev.validate(leg) for leg in opp.legs]
             self.legs_sent += len(decisions)
             rejected = [d.code for d in decisions if not d.approved]
@@ -95,7 +133,10 @@ class Ring:
                 self.log.emit("jev", strategy=opp.strategy, decision="rejected", codes=sorted(set(rejected)),
                               legs=len(opp.legs))
                 continue
-            self.pnl[opp.strategy] += opp.locked_pnl
+            if opp.strategy == "maker_rebate":
+                self.pnl[opp.strategy] += opp.locked_pnl  # rebates are paid as fills happen
+            else:
+                self.locked.append((self.ticks + RESOLVE_TICKS, cost, opp.locked_pnl, opp.strategy))
             approved_trades += 1
             if opp.strategy != "maker_rebate" or opp.locked_pnl:
                 self.log.emit("trade", bot="polymarket", strategy=opp.strategy, legs=len(opp.legs),
@@ -106,6 +147,9 @@ class Ring:
         for proposal in predictions:
             if self.halted and proposal["side"] == "buy":
                 continue  # halted: exits only
+            if proposal["side"] == "buy" and self._reject_for_capital(
+                    "new_token_traction", proposal["qty"] * proposal["price"]):
+                continue
             self.legs_sent += 1
             decision = self.jev.validate(proposal)
             if not decision.approved:
@@ -131,6 +175,8 @@ class Ring:
         self.log.emit(
             "tick", tick=self.ticks, equity=round(equity, 2), pnl=round(equity - CAPITAL_USDC, 2),
             halted=self.halted, orders=approved_trades, loop_ms=round(loop_seconds * 1000, 2),
+            deployed=round(self.deployed(), 2), free_capital=round(self.free_capital(), 2),
+            pending_pnl=round(sum(p for _, _, p, _ in self.locked), 2),
             loop_target_ms=self.cfg.beta.loop_target_seconds * 1000, loop_overruns=self.beta.overruns,
             jev={"approved": self.jev.counts["approved"], "rejected": self.jev.counts["rejected"]},
         )
@@ -188,7 +234,8 @@ def run(env=os.environ, stream=None) -> Ring:
                 time.sleep(max(0.0, tick_seconds - ring.beta.last_loop_seconds))
     except KeyboardInterrupt:
         pass
-    log.emit("stop", ticks=ring.ticks, pnl={k: round(v, 2) for k, v in ring.pnl.items()})
+    log.emit("stop", ticks=ring.ticks, pnl={k: round(v, 2) for k, v in ring.pnl.items()},
+             pending_pnl=round(sum(p for _, _, p, _ in ring.locked), 2))
     log.close()
     return ring
 

@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Agent Clusters 3D</title>
+<meta name="theme-color" content="#0b0d12">
+<link rel="icon" href="/icons/favicon-32.png" sizes="32x32">
+<link rel="stylesheet" href="/3d.css">
+</head><body>
+<header><b>Agent Clusters 3D</b>
+ <span class="mut">paper mode · tick <span id="tick">0</span> · <span id="agents">0</span> agents · <span id="active">0</span> voting</span>
+ <a href="/">live log</a> <span class="mut">drag to rotate · scroll to zoom</span>
+ <form method="post" action="/logout"><button type="submit">Sign out</button></form></header>
+<div id="err">Could not load the 3D or chart library. The live log at / still works.</div>
+<main>
+ <div><div id="scene"><div id="legend" class="mut">
+  <span class="dot up-dot"></span>buy / trending / full size
+  <span class="dot dn-dot"></span>sell / choppy / shrink
+  <span class="dot idle-dot"></span>warming up</div></div></div>
+ <div>
+  <div class="card"><h3>Agents per department <span class="mut">slider</span></h3>
+   <input id="slider" type="range" min="350" max="2500" step="50" value="350" aria-label="Agents per department">
+   <div class="row"><span><b id="perdept">350</b> per department</span><span><b id="sliderTotal">1400</b> agents in all</span></div>
+   <div id="sliderMsg" class="mut">Move it to grow or shrink every department. Agents that stay keep their brains.</div></div>
+  <div class="card"><h3>Managers</h3><div id="managers" class="mut">waiting for the first report…</div></div>
+  <div class="card"><h3>Departments</h3><div id="depts" class="mut">waiting…</div></div>
+  <div class="card"><h3>Price <select id="sym"></select></h3><div id="price"></div></div>
+  <div class="card"><h3>Session P&amp;L <span class="mut">agent engines</span></h3><div id="pnl"></div></div>
+ </div>
+</main>
+<script src="/vendor/three.min.js"></script>
+<script src="/vendor/lightweight-charts.js"></script>
+<script src="/3d.js"></script>
+</body></html>

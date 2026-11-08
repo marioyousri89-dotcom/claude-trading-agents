@@ -1,67 +1,13 @@
-"""The /3d page: a live 3D view of every agent cluster, manager and pipeline stage, with TradingView charts.
-
-Each department is a cluster of dots, one dot per agent, coloured by the agent's
-latest vote (green = buy / trending / full size, red = sell / choppy / shrink,
-grey = still warming up). Managers float above their departments. Pulses travel
-along the pipeline when ticks and orders happen:
-market feed -> departments -> desk -> risk gate -> Jev gate -> paper broker.
-
-Libraries: three.js r128 (cdnjs) and TradingView lightweight-charts 4.1.3 (unpkg).
-"""
-
-CLUSTER_PAGE = r"""<!doctype html>
-<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Agent Clusters 3D</title>
-<style>
-:root{--bg:#0b0d12;--fg:#e6e6e6;--mut:#8a8f98;--up:#3fb950;--dn:#f85149;--card:#151922;--line:#232836;--acc:#58a6ff}
-*{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--fg);font:13px/1.45 ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif}
-header{padding:10px 16px;border-bottom:1px solid var(--line);display:flex;gap:12px;align-items:baseline;flex-wrap:wrap}
-header a{color:var(--acc)}
-.mut{color:var(--mut)}.up{color:var(--up)}.dn{color:var(--dn)}
-main{display:grid;grid-template-columns:minmax(0,1fr) 380px;gap:12px;padding:12px 16px}
-@media (max-width:900px){main{grid-template-columns:minmax(0,1fr)}}
-#scene{position:relative;height:72vh;min-height:420px;background:radial-gradient(ellipse at center,#121826 0%,#0b0d12 70%);
- border:1px solid var(--line);border-radius:8px;overflow:hidden;cursor:grab;touch-action:none}
-#scene canvas{display:block}
-.label{position:absolute;transform:translate(-50%,-50%);pointer-events:none;font-size:12px;white-space:nowrap;
- text-shadow:0 0 4px #000,0 0 2px #000;text-align:center}
-.label b{font-size:13px}
-.card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-bottom:12px}
-.card h3{margin:0 0 6px;font-size:13px}
-.row{display:flex;justify-content:space-between;gap:8px;padding:3px 0;border-bottom:1px solid var(--line)}
-.row:last-child{border-bottom:0}
-select{background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:4px;padding:2px 6px}
-#price,#pnl{height:200px}
-#legend{position:absolute;left:10px;bottom:8px;font-size:11px}
-.dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin:0 4px 0 10px;vertical-align:middle}
-input[type=range]{accent-color:var(--acc)}
-#err{display:none;padding:8px 16px;color:var(--dn)}
-</style></head><body>
-<header><b>Agent Clusters 3D</b>
- <span class="mut">paper mode · tick <span id="tick">0</span> · <span id="agents">0</span> agents · <span id="active">0</span> voting</span>
- <a href="/">live log</a> <span class="mut">drag to rotate · scroll to zoom</span></header>
-<div id="err">Could not load the 3D or chart library. The live log at / still works.</div>
-<main>
- <div><div id="scene"><div id="legend" class="mut">
-  <span class="dot" style="background:#3fb950"></span>buy / trending / full size
-  <span class="dot" style="background:#f85149"></span>sell / choppy / shrink
-  <span class="dot" style="background:#4a505c"></span>warming up</div></div></div>
- <div>
-  <div class="card"><h3>Agents per department <span class="mut">slider</span></h3>
-   <input id="slider" type="range" min="350" max="2500" step="50" value="350" style="width:100%" aria-label="Agents per department">
-   <div class="row"><span><b id="perdept">350</b> per department</span><span><b id="sliderTotal">1400</b> agents in all</span></div>
-   <div id="sliderMsg" class="mut">Move it to grow or shrink every department. Agents that stay keep their brains.</div></div>
-  <div class="card"><h3>Managers</h3><div id="managers" class="mut">waiting for the first report…</div></div>
-  <div class="card"><h3>Departments</h3><div id="depts" class="mut">waiting…</div></div>
-  <div class="card"><h3>Price <select id="sym"></select></h3><div id="price"></div></div>
-  <div class="card"><h3>Session P&amp;L <span class="mut">all shards</span></h3><div id="pnl"></div></div>
- </div>
-</main>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-<script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
-<script>
+// The /3d page: a live 3D view of every agent cluster, manager and pipeline stage, with TradingView charts.
+//
+// Each department is a cluster of dots, one per agent, coloured by the agent's latest vote
+// (green = buy / trending / full size, red = sell / choppy / shrink, grey = warming up or sitting out).
+// Managers float above their departments. Pulses travel along the pipeline when ticks and orders
+// happen: market feed -> departments -> desk -> risk gate -> Jev gate -> paper broker.
+// Libraries are vendored under /vendor: three.js r128 (MIT) and lightweight-charts 4.1.3 (Apache-2.0).
 (function(){
+// Signed out (cloud login on): go to the sign-in page instead of drawing an empty view.
+function api(url){return fetch(url).then(r=>{if(r.status===401){location.href='/login';throw new Error('signed out')}return r.json()})}
 if(!window.THREE||!window.LightweightCharts){document.getElementById('err').style.display='block'}
 const DEPTS={trend:{pos:[-40,0,-32],label:'Trend Trading'},reversion:{pos:[40,0,-32],label:'Reversion Trading'},
  research:{pos:[-40,0,32],label:'Research'},risk:{pos:[40,0,32],label:'Risk'}};
@@ -142,13 +88,13 @@ function renderOrg(org){let agents=0,active=0;
  document.getElementById('depts').innerHTML=Object.values(org.departments).map(d=>
   `<div class="row"><span><b>${d.name}</b><br><span class="mut">${d.job}</span><br>`+
   `<span class="mut">brains: trust ${fmt(d.avg_weight)} · right ${d.skill===null?'–':(100*d.skill).toFixed(1)+'%'} · ${d.sitting_out} sitting out</span></span>`+
-  `<span style="text-align:right">${d.agents} agents<br><span class="mut">avg ${fmt(d.avg_vote)}</span> · `+
+  `<span class="right">${d.agents} agents<br><span class="mut">avg ${fmt(d.avg_vote)}</span> · `+
   `<span class="${d.pnl>=0?'up':'dn'}">${d.pnl.toFixed(2)}</span></span></div>`).join('');
  const sl=org.slider;if(sl&&!sliding){const v=sl.per_department||Math.round(agents/sl.departments)||sl.min;
   slider.min=sl.min;slider.max=sl.max;slider.value=v;showSlider(v)}
  document.getElementById('managers').innerHTML=org.managers.map(m=>
   `<div class="row"><span><b>${m.manager}</b> <span class="mut">${m.title}</span><br>${m.call}</span>`+
-  `<span style="text-align:right">${m.agents} agents<br><span class="${m.pnl>=0?'up':'dn'}">${m.pnl.toFixed(2)}</span></span></div>`).join('');
+  `<span class="right">${m.agents} agents<br><span class="${m.pnl>=0?'up':'dn'}">${m.pnl.toFixed(2)}</span></span></div>`).join('');
  for(const m of org.managers){const mm=MANAGERS[m.manager];if(mm&&mm.label)mm.label.el.innerHTML=`<b>${m.manager}</b><br><span class="mut">${m.call}</span>`}}
 
 let priceChart,priceSeries,pnlSeries,history=[],sym=null;
@@ -162,7 +108,7 @@ function initCharts(){if(!window.LightweightCharts)return;
   topFillColor1:'rgba(63,185,80,.3)',topFillColor2:'rgba(63,185,80,0)',bottomFillColor1:'rgba(248,81,73,0)',bottomFillColor2:'rgba(248,81,73,.3)'})}
 function drawPrice(){if(!priceSeries||!sym)return;let last=0;
  priceSeries.setData(history.filter(h=>h.prices[sym]!==undefined).map(h=>{const t=Math.max(last+1,Math.floor(h.ts));last=t;return {time:t,value:h.prices[sym]}}))}
-function loadPrices(){fetch('/api/prices').then(r=>r.json()).then(d=>{history=d.history;
+function loadPrices(){api('/api/prices').then(d=>{history=d.history;
  const sel=document.getElementById('sym');const syms=history.length?Object.keys(history[history.length-1].prices):[];
  if(syms.length&&!sym){sym=syms[0];sel.innerHTML=syms.map(s=>`<option>${s}</option>`).join('');sel.onchange=()=>{sym=sel.value;drawPrice()}}
  drawPrice();if(pnlSeries){const t0=Math.floor(Date.now()/1000)-d.pnl.length;pnlSeries.setData(d.pnl.map((p,i)=>({time:t0+i,value:p.pnl})))}})}
@@ -174,7 +120,7 @@ slider.addEventListener('input',()=>{sliding=true;showSlider(+slider.value);clea
   body:JSON.stringify({per_department:+slider.value})}).then(r=>r.json()).then(d=>{
   document.getElementById('sliderMsg').textContent=d.error?d.error:`Saved. Departments resize to ${d.per_department} each within a few seconds.`;
   setTimeout(()=>{sliding=false},6000)}).catch(()=>{document.getElementById('sliderMsg').textContent='Could not save. Is the dashboard running?';sliding=false})},400)});
-function loadOrg(){fetch('/api/org').then(r=>r.json()).then(renderOrg)}
+function loadOrg(){api('/api/org').then(renderOrg)}
 
 if(window.THREE)init3d();initCharts();loadOrg();loadPrices();
 setInterval(loadOrg,2000);setInterval(loadPrices,3000);
@@ -185,4 +131,3 @@ es.onmessage=m=>{if(!scene)return;const e=JSON.parse(m.data);const P=k=>stageNod
  if(e.type==='risk')pulse([P('desk'),P('riskgate')],0xf0b429);
  if(e.type==='jev'&&e.decision==='rejected')pulse([P('riskgate'),P('jev')],0xf85149)};
 })();
-</script></body></html>"""

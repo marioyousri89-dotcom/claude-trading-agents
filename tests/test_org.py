@@ -118,8 +118,11 @@ class DashboardOrgTests(unittest.TestCase):
         prices = json.load(urllib.request.urlopen(self.base + "/api/prices"))
         self.assertEqual(len(prices["history"]), 30)
         page = urllib.request.urlopen(self.base + "/3d").read().decode()
-        self.assertIn("lightweight-charts@4.1.3", page)
-        self.assertIn("three.js/r128", page)
+        self.assertIn('src="/vendor/three.min.js"', page)
+        self.assertIn('src="/vendor/lightweight-charts.js"', page)
+        self.assertNotIn("style=", page)  # the CSP allows no inline styles
+        for asset in ("/3d.js", "/3d.css", "/vendor/three.min.js", "/vendor/lightweight-charts.js"):
+            self.assertEqual(urllib.request.urlopen(self.base + asset).status, 200)
 
     def test_slider_endpoint(self):
         self.assertEqual(self.post(b'{"per_department": 600}'), (200, {"per_department": 600, "total": 2400}))
