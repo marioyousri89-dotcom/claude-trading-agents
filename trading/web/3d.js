@@ -77,8 +77,18 @@ function frame(now){requestAnimationFrame(frame);
  for(const l of labels){const v=l.pos.clone().project(camera);const vis=v.z<1&&Math.abs(v.x)<1.1&&Math.abs(v.y)<1.1;
   l.el.style.display=vis?'block':'none';if(vis){l.el.style.left=((v.x+1)/2*w)+'px';l.el.style.top=((1-v.y)/2*h)+'px'}}}
 
+function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+function pct(v){return v===null||v===undefined?'–':Math.round(100*v)+'%'}
+function renderSchool(org){
+ document.getElementById('school').innerHTML=Object.values(org.departments).map(d=>{const s=d.school||{};
+  const courses=Object.values(s.courses||{}).map(c=>`${esc(c.name)} ${pct(c.avg)}`).join(' · ');
+  return `<div class="row"><span><b>${esc(d.name)}</b><br><span class="mut">${courses||'not trained'}</span></span>`+
+   `<span class="right">${s.graduates||0}/${s.trained||0} passed<br><span class="mut">exam ${pct(s.avg_exam)}</span></span></div>`}).join('');
+ const news=org.news||[];
+ document.getElementById('news').innerHTML=news.length?news.map(n=>
+  `<div class="row"><span>${esc(n.text)}</span><span class="right mut">${esc(n.kind)} · t${n.tick}</span></div>`).join(''):'no headlines yet'}
 function fmt(v){return v===null||v===undefined?'–':v.toFixed(2)}
-function renderOrg(org){let agents=0,active=0;
+function renderOrg(org){let agents=0,active=0;renderSchool(org);
  for(const [k,d] of Object.entries(org.departments)){agents+=d.agents;active+=d.active;
   if(window.THREE&&scene&&d.agents){const c=buildCluster(k,d.agents);const col=c.points.geometry.attributes.color;
    d.votes.forEach((v,i)=>{if(i<c.n)col.setXYZ(i,...color(v))});col.needsUpdate=true;
@@ -87,13 +97,15 @@ function renderOrg(org){let agents=0,active=0;
  document.getElementById('active').textContent=active;
  document.getElementById('depts').innerHTML=Object.values(org.departments).map(d=>
   `<div class="row"><span><b>${d.name}</b><br><span class="mut">${d.job}</span><br>`+
-  `<span class="mut">brains: trust ${fmt(d.avg_weight)} · right ${d.skill===null?'–':(100*d.skill).toFixed(1)+'%'} · ${d.sitting_out} sitting out</span></span>`+
+  `<span class="mut">brains: trust ${fmt(d.avg_weight)} · right ${d.skill===null?'–':(100*d.skill).toFixed(1)+'%'} · ${d.sitting_out} sitting out</span>`+
+  (d.held?`<br><span class="mut">held ${d.held} weak calls</span>`:'')+
+  (d.macro!==null&&d.macro!==undefined?`<br><span class="mut">news read ${d.macro>0?'bullish':'bearish'} (${fmt(d.macro)})</span>`:'')+`</span>`+
   `<span class="right">${d.agents} agents<br><span class="mut">avg ${fmt(d.avg_vote)}</span> · `+
   `<span class="${d.pnl>=0?'up':'dn'}">${d.pnl.toFixed(2)}</span></span></div>`).join('');
  const sl=org.slider;if(sl&&!sliding){const v=sl.per_department||Math.round(agents/sl.departments)||sl.min;
   slider.min=sl.min;slider.max=sl.max;slider.value=v;showSlider(v)}
  document.getElementById('managers').innerHTML=org.managers.map(m=>
-  `<div class="row"><span><b>${m.manager}</b> <span class="mut">${m.title}</span><br>${m.call}</span>`+
+  `<div class="row"><span><b>${m.manager}</b> <span class="mut">${m.title}</span><br>${m.call}<br><span class="mut">${esc(m.training||'')}</span></span>`+
   `<span class="right">${m.agents} agents<br><span class="${m.pnl>=0?'up':'dn'}">${m.pnl.toFixed(2)}</span></span></div>`).join('');
  for(const m of org.managers){const mm=MANAGERS[m.manager];if(mm&&mm.label)mm.label.el.innerHTML=`<b>${m.manager}</b><br><span class="mut">${m.call}</span>`}}
 

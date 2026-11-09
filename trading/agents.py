@@ -16,6 +16,7 @@ import statistics
 from collections import deque
 from dataclasses import dataclass
 
+from . import academy
 from .brain import AgentBrain
 from .org import department_sizes
 
@@ -46,8 +47,10 @@ class Agent:
         self.pnl = 0.0
         self.department = ""  # set by build_team
         self.brain = AgentBrain(agent_id)
+        self.training: academy.Training | None = None  # set by academy.enroll
+        self.macro_view: float | None = None  # analysts: what the news says, -1 bearish .. 1 bullish
         # The agent's own space: nothing else writes here.
-        self.workspace = {"votes_cast": 0, "sat_out": 0, "last_signal": None, "last_vote": None}
+        self.workspace = {"votes_cast": 0, "sat_out": 0, "held": 0, "last_signal": None, "last_vote": None}
 
     def observe(self, price: float) -> Vote | None:
         if self.prices:
@@ -68,10 +71,25 @@ class Agent:
             if self.role == "trader":
                 self.position = 0.0
             return None
+        if self.role == "trader" and not academy.should_act(self.training, abs(signal), self.brain.weight):
+            # Trained decision makers hold when the call's edge doesn't pay for the trade.
+            value = 0.0
+            self.workspace["held"] += 1
+            self.workspace["last_vote"] = value
         self.workspace["votes_cast"] += 1
         if self.role == "trader":
             self.position = value
         return Vote(self.agent_id, self.role, self.symbol, value)
+
+    def hear(self, headline: dict) -> None:
+        """Read a news headline with what the agent learned at the academy (analysts only)."""
+        read = academy.read_headline(self.training, headline)
+        if read is not None:
+            self.macro_view = max(-1.0, min(1.0, 0.5 * (self.macro_view or 0.0) + read))
+
+    def forget_news(self, keep: float = 0.95) -> None:
+        if self.macro_view is not None:
+            self.macro_view *= keep
 
     def reward(self, signal: float, price: float) -> float:
         """How right the last signal was, -1..1. Traders: did the price move their way?"""
@@ -180,7 +198,10 @@ TRADER_TYPES = TREND_TYPES + (MeanReversion,)
 
 
 def build_team(count: int, symbols: list[str], seed: int = 0) -> list[Agent]:
-    """Build `count` agents split evenly across the departments, spread across symbols, with varied parameters."""
+    """Build `count` agents split evenly across the departments, spread across symbols, with varied parameters.
+
+    The agents come out untrained; `academy.enroll` trains each one for its department's job.
+    """
     rng = random.Random(seed)
     sizes = department_sizes(count)
 

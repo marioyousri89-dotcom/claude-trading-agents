@@ -1,6 +1,6 @@
 """The coordinator: turns hundreds of agent votes into one risk-checked order per symbol."""
 
-from collections import defaultdict
+from collections import defaultdict, deque
 
 from .agents import REVERSION, Agent, Trader
 from .brains import BrainAlpha, BrainBeta
@@ -12,6 +12,8 @@ from .risk import RiskManager
 SIGNAL_THRESHOLD = 0.15
 LEADERBOARD_EVERY = 20
 ORG_EVERY = 5  # how often the managers report their departments
+MACRO_WEIGHT = 0.3  # how far the analysts' read of the news tilts the desk's call
+LATEST_NEWS = 8
 
 
 class Desk:
@@ -27,17 +29,29 @@ class Desk:
         self.ticks = 0
         self.last_prices: dict[str, float] = {}
         self.symbols = sorted({a.symbol for a in agents})
+        self.news: deque[dict] = deque(maxlen=LATEST_NEWS)
 
-    def step(self, prices: dict[str, float]) -> None:
+    def step(self, prices: dict[str, float], headlines: list[dict] | None = None) -> None:
         self.ticks += 1
+        for headline in headlines or ():
+            self.news.appendleft(headline)
         self.last_prices = dict(prices)
         if self.beta:
             self.beta.begin()
-        votes = defaultdict(lambda: {"trend": [], "reversion": [], "analyst": [], "risk": []})
+        votes = defaultdict(lambda: {"trend": [], "reversion": [], "analyst": [], "risk": [], "macro": []})
         agent_votes: dict[str, float] = {}
+        by_symbol = defaultdict(list)
+        for headline in headlines or ():
+            by_symbol[headline["symbol"]].append(headline)
         for agent in self.agents:
             if agent.symbol not in prices:
                 continue
+            if agent.role == "analyst":
+                agent.forget_news()
+                for headline in by_symbol.get(agent.symbol, ()):
+                    agent.hear(headline)
+                if agent.macro_view is not None:
+                    votes[agent.symbol]["macro"].append(agent.macro_view)
             vote = agent.observe(prices[agent.symbol])
             if vote is None:
                 continue
@@ -94,7 +108,8 @@ class Desk:
         )
         if self.ticks % ORG_EVERY == 0 or self.ticks == 1:
             departments = summarize(self.agents, agent_votes)
-            self.log.emit("org", tick=self.ticks, departments=departments, managers=manager_reports(departments))
+            self.log.emit("org", tick=self.ticks, departments=departments, managers=manager_reports(departments),
+                          news=list(self.news))
         if self.ticks % LEADERBOARD_EVERY == 0:
             self.log.emit("leaderboard", tick=self.ticks, top=self.leaderboard(5))
 
@@ -110,7 +125,10 @@ class Desk:
             t = trend_weight * self.alpha.weights["trend"]
             r = (1 - trend_weight) * self.alpha.weights["reversion"]
             trend_weight = t / (t + r) if t + r else 0.5
-        return trend_weight * trend + (1 - trend_weight) * reversion
+        score = trend_weight * trend + (1 - trend_weight) * reversion
+        # Analysts trained in politics and economics add what the news says.
+        macro = sum(v["macro"]) / len(v["macro"]) if v["macro"] else 0.0
+        return max(-1.0, min(1.0, score + MACRO_WEIGHT * macro))
 
     def style_pnl(self) -> dict[str, float]:
         pnl = {"trend": 0.0, "reversion": 0.0}
