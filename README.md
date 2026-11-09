@@ -24,6 +24,29 @@ windows. `AGENT_COUNT` splits evenly across the departments.
 - Traders learn from their own P&L. Analysts learn from whether trends continued. Risk monitors learn from
   whether they cut size before big moves.
 
+**Every agent is trained for its job before it starts** (`trading/academy.py`). Each department has its own
+curriculum:
+
+| Department | Courses |
+|---|---|
+| Research (analysts) | **Politics** (elections, tariffs, trade deals, sanctions, wars, stimulus, tax cuts), **Economy** (inflation, interest rates, jobs, GDP, unemployment, PMI, consumer data), Market regimes |
+| Trend and Reversion (decision makers) | **Reading numbers** (read a chart's return, moving-average gap and slope), **Making decisions** (act only when the edge pays for the cost), **How to trade** (take a trade only when win rate x payoff beats the loss) |
+| Risk | Volatility (when to cut size), Drawdowns (de-risk after a big drop or a losing streak) |
+
+Each course is a stream of practice lessons with textbook answers, some of them deliberately wrong because
+markets are noisy. Every agent learns each course with its own small model at its own speed, then sits an
+exam marked against the true answer. 70% passes, with up to three rounds of lessons. About 98% graduate.
+
+What the training changes at work:
+- An agent's exam average sets its starting trust (0.75 to 1.25), so strong students start more confident.
+- Trained decision makers **hold** (vote flat) on calls whose edge doesn't cover the cost of the trade.
+- Analysts read a simulated **news wire** (`trading/news.py`) with what they learned in politics and economics,
+  and their bullish or bearish read tilts the desk's call. The wire hints at where the simulated market is
+  leaning, and is right about 70% of the time.
+
+The managers also report their departments' training ("336/350 graduated, exam avg 85%"). Training takes
+about half a second for 1,400 agents at start-up.
+
 The managers read their departments every 5 ticks and report a call ("favour trend", "choppy market",
 "run 96% of normal size"). A coordinator (`trading/desk.py`) combines the votes into one order per symbol.
 The hard limits in `trading/risk.py` have the final say: order size, position size, gross exposure, and a
@@ -40,7 +63,8 @@ Open **http://127.0.0.1:8080/3d**:
 - Pulses run along the pipeline as it works: market feed, departments, desk, risk gate, Jev gate, paper broker.
 - Drag to rotate and scroll to zoom.
 - The side panel shows each manager's call and each department's brains (average trust, share of calls right,
-  how many are sitting out).
+  how many are sitting out), the **Academy** card (each department's courses, exam scores and graduates) and
+  the latest news headlines.
 - There are TradingView (lightweight-charts) charts for every symbol's price and the session P&L.
 - **The slider sets the agents per department, from 350 to 2,500 (up to 10,000 agents in all).** The dashboard
   saves the setting to `control.json` in the shared events volume. Every engine shard resizes within about

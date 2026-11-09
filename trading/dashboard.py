@@ -28,7 +28,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from . import control
-from .org import DEPARTMENTS, manager_reports
+from .org import DEPARTMENTS, finish_school, manager_reports
 from .webauth import COOKIE, WebAuth
 
 HISTORY = 500
@@ -141,7 +141,9 @@ class EventHub:
         with self.cond:
             reports = [v["org"] for v in self.shards.values() if "org" in v]
         merged = {d.key: {"name": d.name, "job": d.job, "agents": 0, "active": 0, "sitting_out": 0, "pnl": 0.0,
-                          "votes": [], "vote_sum": 0.0, "weight_sum": 0.0, "wins": 0, "experience": 0}
+                          "votes": [], "vote_sum": 0.0, "weight_sum": 0.0, "wins": 0, "experience": 0, "held": 0,
+                          "macro_sum": 0.0, "macro_count": 0,
+                          "school": {"trained": 0, "graduates": 0, "exam_sum": 0.0, "course_sums": {}}}
                   for d in DEPARTMENTS}
         for report in reports:
             for key, dept in report["departments"].items():
@@ -155,6 +157,16 @@ class EventHub:
                 m["sitting_out"] += dept.get("sitting_out", 0)
                 m["wins"] += dept.get("wins", 0)
                 m["experience"] += dept.get("experience", 0)
+                m["held"] += dept.get("held", 0)
+                m["macro_sum"] += dept.get("macro_sum", 0.0)
+                m["macro_count"] += dept.get("macro_count", 0)
+                school = dept.get("school")
+                if school:
+                    ms = m["school"]
+                    for k in ("trained", "graduates", "exam_sum"):
+                        ms[k] += school[k]
+                    for k, v in school["course_sums"].items():
+                        ms["course_sums"][k] = ms["course_sums"].get(k, 0.0) + v
                 if dept.get("avg_weight") is not None:
                     m["weight_sum"] += dept["avg_weight"] * dept["agents"]
                 if dept["avg_vote"] is not None:
@@ -164,9 +176,11 @@ class EventHub:
             m["avg_weight"] = round(m.pop("weight_sum") / m["agents"], 4) if m["agents"] else None
             m["skill"] = round(m["wins"] / m["experience"], 4) if m["experience"] else None
             m["pnl"] = round(m["pnl"], 2)
+            finish_school(m)
         tick = max((r["tick"] for r in reports), default=0)
+        latest = max(reports, key=lambda r: r["tick"], default={})
         per_department = control.read(self.events_dir)
-        return {"tick": tick, "departments": merged, "managers": manager_reports(merged),
+        return {"tick": tick, "departments": merged, "managers": manager_reports(merged), "news": latest.get("news", []),
                 "slider": {"per_department": per_department, "min": control.MIN_DEPARTMENT_SIZE,
                            "max": control.MAX_DEPARTMENT_SIZE, "departments": len(DEPARTMENTS)}}
 

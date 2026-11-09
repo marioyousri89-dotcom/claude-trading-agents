@@ -21,6 +21,7 @@ import sys
 import time
 from pathlib import Path
 
+from . import academy
 from . import config as ats_config
 from . import control
 from .agents import build_team
@@ -30,6 +31,7 @@ from .broker import PaperBroker
 from .desk import Desk
 from .events import EventLog
 from .market import SimulatedMarket
+from .news import NewsWire
 from .risk import RiskLimits, RiskManager
 
 DEFAULT_SYMBOLS = "AAPL,MSFT,NVDA,AMZN,GOOG,TSLA,META,AMD,BTC,ETH"
@@ -40,7 +42,10 @@ CONTROL_EVERY = 10  # ticks between checks of the agent slider
 def shard_agents(agent_count: int, symbols: list[str], shard_id: int, shard_count: int, seed: int):
     if not 0 <= shard_id < shard_count:
         raise SystemExit(f"SHARD_ID must be in 0..{shard_count - 1}")
-    return build_team(agent_count, symbols, seed)[shard_id::shard_count]
+    agents = build_team(agent_count, symbols, seed)[shard_id::shard_count]
+    for agent in agents:
+        academy.enroll(agent)  # every agent is trained for its department's job before it starts
+    return agents
 
 
 def resize(desk: Desk, agent_count: int, symbols: list[str], shard_id: int, shard_count: int, seed: int) -> int:
@@ -75,6 +80,7 @@ def run(env=os.environ, stream=None) -> Desk:
     desk = Desk(agents, broker, RiskManager(limits, broker), log, beta=BrainBeta(cfg), alpha=alpha)
     # Every shard sees the same market (same seed), but trades its own agents.
     market = SimulatedMarket(symbols, seed=seed)
+    news = NewsWire(symbols, seed=seed)
 
     roles, departments = {}, {}
     for a in agents:
@@ -82,7 +88,7 @@ def run(env=os.environ, stream=None) -> Desk:
         departments[a.department] = departments.get(a.department, 0) + 1
     log.emit("start", agents=len(agents), total_agents=agent_count, shard_count=shard_count,
              roles=roles, departments=departments, symbols=symbols, mode="paper", config_version=cfg.version,
-             learning_interval_seconds=alpha.interval)
+             learning_interval_seconds=alpha.interval, school=academy.summarize(agents))
 
     stopping = False
 
@@ -101,7 +107,8 @@ def run(env=os.environ, stream=None) -> Desk:
                     after = resize(desk, agent_count, symbols, shard_id, shard_count, seed)
                     log.emit("resize", agents=after, was=before, total_agents=agent_count,
                              per_department=per_department)
-            desk.step(market.tick())
+            prices = market.tick()
+            desk.step(prices, news.tick(market.drift, desk.ticks + 1))
             if tick_seconds:
                 time.sleep(tick_seconds)
     except KeyboardInterrupt:

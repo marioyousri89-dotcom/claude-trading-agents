@@ -10,6 +10,8 @@ a summary, which the dashboard shows as the org chart and the 3D cluster view.
 
 from dataclasses import dataclass
 
+from . import academy
+
 MIN_DEPARTMENT_SIZE = 350
 
 
@@ -58,9 +60,16 @@ def summarize(agents, votes: dict[str, float]) -> dict[str, dict]:
     (not enough price history yet) or whose brain chose to sit out report None.
     """
     report = {d.key: {"agents": 0, "active": 0, "sitting_out": 0, "vote_sum": 0.0, "pnl": 0.0, "weight_sum": 0.0,
-                      "wins": 0, "experience": 0, "votes": []} for d in DEPARTMENTS}
+                      "wins": 0, "experience": 0, "held": 0, "macro_sum": 0.0, "macro_count": 0, "votes": []}
+              for d in DEPARTMENTS}
+    members = {d.key: [] for d in DEPARTMENTS}
     for a in agents:
+        members[a.department].append(a)
         dept = report[a.department]
+        dept["held"] += a.workspace.get("held", 0)
+        if a.macro_view is not None:
+            dept["macro_sum"] += a.macro_view
+            dept["macro_count"] += 1
         dept["agents"] += 1
         dept["pnl"] += a.pnl
         dept["weight_sum"] += a.brain.weight
@@ -79,7 +88,21 @@ def summarize(agents, votes: dict[str, float]) -> dict[str, dict]:
         dept["avg_vote"] = round(dept.pop("vote_sum") / dept["active"], 4) if dept["active"] else None
         dept["avg_weight"] = round(dept.pop("weight_sum") / dept["agents"], 4) if dept["agents"] else None
         dept["pnl"] = round(dept["pnl"], 2)
+        dept["macro_sum"] = round(dept["macro_sum"], 4)
+    for key, dept in report.items():
+        dept["school"] = academy.summarize(members[key])
+        finish_school(dept)
     return report
+
+
+def finish_school(dept: dict) -> None:
+    """Turn a department's school sums into graduation rate, exam average and course averages."""
+    school = dept["school"]
+    n = school["trained"]
+    school["avg_exam"] = round(school["exam_sum"] / n, 4) if n else None
+    school["courses"] = {k: {"name": academy.COURSES[k].name, "avg": round(v / n, 4) if n else None}
+                         for k, v in school["course_sums"].items()}
+    dept["macro"] = round(dept["macro_sum"] / dept["macro_count"], 4) if dept["macro_count"] else None
 
 
 def manager_reports(departments: dict[str, dict]) -> list[dict]:
@@ -97,9 +120,16 @@ def manager_reports(departments: dict[str, dict]) -> list[dict]:
         elif m.key == "sage":
             regime = departments.get("research", {}).get("avg_vote")
             call = "warming up" if regime is None else ("trending market" if regime > 0 else "choppy market")
+            macro = departments.get("research", {}).get("macro")
+            if macro is not None and abs(macro) >= 0.05:
+                call += f", news {'bullish' if macro > 0 else 'bearish'}"
         else:
             exposure = departments.get("risk", {}).get("avg_vote")
             call = "warming up" if exposure is None else f"run {exposure:.0%} of normal size"
+        trained = sum(d.get("school", {}).get("trained", 0) for d in own)
+        graduates = sum(d.get("school", {}).get("graduates", 0) for d in own)
+        exam = sum(d.get("school", {}).get("exam_sum", 0.0) for d in own)
+        training = (f"{graduates}/{trained} graduated, exam avg {exam / trained:.0%}" if trained else "not trained")
         out.append({"manager": m.name, "title": m.title, "departments": list(m.departments),
-                    "agents": agents, "active": active, "pnl": pnl, "call": call})
+                    "agents": agents, "active": active, "pnl": pnl, "call": call, "training": training})
     return out
