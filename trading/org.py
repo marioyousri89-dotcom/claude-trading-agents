@@ -60,13 +60,20 @@ def summarize(agents, votes: dict[str, float]) -> dict[str, dict]:
     (not enough price history yet) or whose brain chose to sit out report None.
     """
     report = {d.key: {"agents": 0, "active": 0, "sitting_out": 0, "vote_sum": 0.0, "pnl": 0.0, "weight_sum": 0.0,
-                      "wins": 0, "experience": 0, "held": 0, "macro_sum": 0.0, "macro_count": 0, "votes": []}
+                      "wins": 0, "experience": 0, "held": 0, "macro_sum": 0.0, "macro_count": 0, "votes": [],
+                      "traders": 0, "trades_hour_sum": 0, "trades_hour_min": None, "trades_total": 0}
               for d in DEPARTMENTS}
     members = {d.key: [] for d in DEPARTMENTS}
     for a in agents:
         members[a.department].append(a)
         dept = report[a.department]
         dept["held"] += a.workspace.get("held", 0)
+        if a.role == "trader":
+            t = a.workspace.get("trades_this_hour", 0)
+            dept["traders"] += 1
+            dept["trades_hour_sum"] += t
+            dept["trades_total"] += a.workspace.get("trades_total", 0)
+            dept["trades_hour_min"] = t if dept["trades_hour_min"] is None else min(dept["trades_hour_min"], t)
         if a.macro_view is not None:
             dept["macro_sum"] += a.macro_view
             dept["macro_count"] += 1
@@ -130,6 +137,11 @@ def manager_reports(departments: dict[str, dict]) -> list[dict]:
         graduates = sum(d.get("school", {}).get("graduates", 0) for d in own)
         exam = sum(d.get("school", {}).get("exam_sum", 0.0) for d in own)
         training = (f"{graduates}/{trained} graduated, exam avg {exam / trained:.0%}" if trained else "not trained")
+        traders = sum(d.get("traders", 0) for d in own)
+        if traders:
+            mins = [d["trades_hour_min"] for d in own if d.get("trades_hour_min") is not None]
+            avg = sum(d.get("trades_hour_sum", 0) for d in own) / traders
+            training += f"; {avg:.0f} practice trades/agent this hour (min {min(mins) if mins else 0})"
         out.append({"manager": m.name, "title": m.title, "departments": list(m.departments),
                     "agents": agents, "active": active, "pnl": pnl, "call": call, "training": training})
     return out

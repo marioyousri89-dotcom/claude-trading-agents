@@ -44,6 +44,15 @@ What the training changes at work:
   and their bullish or bearish read tilts the desk's call. The wire hints at where the simulated market is
   leaning, and is right about 70% of the time.
 
+**Training never stops (practice hours).** Every practice hour (3,600 s of ticks, `PRACTICE_HOUR_TICKS`):
+- **Every strategy trader (Trend and Reversion) makes at least 20 practice trades.** The desk keeps each trader
+  on pace; one that falls behind takes its signal instead of holding, and a benched trader keeps practising
+  on its own virtual book (scored by its brain, never sent to the desk).
+- **Every agent is upgraded:** a refresher round in each of its courses and a re-sit of its exams (one retake
+  allowed). Benched agents who pass get another chance to trade.
+- The engine logs an `hour` event with each department's practice trades (min, average, how many fell short)
+  and exam scores before and after the upgrade. The 3D page shows the hour's progress on the Academy card.
+
 The managers also report their departments' training ("336/350 graduated, exam avg 85%"). Training takes
 about half a second for 1,400 agents at start-up.
 

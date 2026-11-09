@@ -82,8 +82,12 @@ function pct(v){return v===null||v===undefined?'–':Math.round(100*v)+'%'}
 function renderSchool(org){
  document.getElementById('school').innerHTML=Object.values(org.departments).map(d=>{const s=d.school||{};
   const courses=Object.values(s.courses||{}).map(c=>`${esc(c.name)} ${pct(c.avg)}`).join(' · ');
-  return `<div class="row"><span><b>${esc(d.name)}</b><br><span class="mut">${courses||'not trained'}</span></span>`+
+  const practice=d.traders?`<br><span class="mut">practice trades this hour: avg ${(d.trades_hour_sum/d.traders).toFixed(0)}, min ${d.trades_hour_min??0}</span>`:'';
+  return `<div class="row"><span><b>${esc(d.name)}</b><br><span class="mut">${courses||'not trained'}</span>${practice}</span>`+
    `<span class="right">${s.graduates||0}/${s.trained||0} passed<br><span class="mut">exam ${pct(s.avg_exam)}</span></span></div>`}).join('');
+ const p=org.practice;if(p){const lh=p.last_hour;
+  document.getElementById('school').innerHTML=`<div class="mut">practice hour ${p.hour} · ${Math.round(100*p.ticks_into_hour/p.hour_ticks)}% done · at least ${p.min_trades} trades per trader per hour`+
+   (lh?` · last upgrade: ${lh.back_in} benched agents back in`:'')+`</div>`+document.getElementById('school').innerHTML}
  const news=org.news||[];
  document.getElementById('news').innerHTML=news.length?news.map(n=>
   `<div class="row"><span>${esc(n.text)}</span><span class="right mut">${esc(n.kind)} · t${n.tick}</span></div>`).join(''):'no headlines yet'}
