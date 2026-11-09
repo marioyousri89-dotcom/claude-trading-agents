@@ -21,6 +21,7 @@ from .brain import AgentBrain
 from .org import department_sizes
 
 TREND = "trend"
+TRADE_STEP = 0.25  # a position change at least this big counts as a practice trade
 REVERSION = "reversion"
 
 
@@ -50,7 +51,9 @@ class Agent:
         self.training: academy.Training | None = None  # set by academy.enroll
         self.macro_view: float | None = None  # analysts: what the news says, -1 bearish .. 1 bullish
         # The agent's own space: nothing else writes here.
-        self.workspace = {"votes_cast": 0, "sat_out": 0, "held": 0, "last_signal": None, "last_vote": None}
+        self.workspace = {"votes_cast": 0, "sat_out": 0, "held": 0, "last_signal": None, "last_vote": None,
+                          "trades_this_hour": 0, "trades_total": 0}
+        self.must_practice = False  # set by the desk when the agent is behind its practice-trade quota
 
     def observe(self, price: float) -> Vote | None:
         if self.prices:
@@ -69,17 +72,36 @@ class Agent:
         if value is None:
             self.workspace["sat_out"] += 1
             if self.role == "trader":
-                self.position = 0.0
+                # Benched traders still keep up their practice trades (scored, never sent to the desk).
+                self._trade(self._practice(signal) if self.must_practice else 0.0)
             return None
-        if self.role == "trader" and not academy.should_act(self.training, abs(signal), self.brain.weight):
+        if self.role == "trader" and not self.must_practice and not academy.should_act(
+                self.training, abs(signal), self.brain.weight):
             # Trained decision makers hold when the call's edge doesn't pay for the trade.
             value = 0.0
             self.workspace["held"] += 1
             self.workspace["last_vote"] = value
+        if self.role == "trader" and self.must_practice:
+            value = self._practice(value)
+            self.workspace["last_vote"] = value
         self.workspace["votes_cast"] += 1
         if self.role == "trader":
-            self.position = value
+            self._trade(value)
         return Vote(self.agent_id, self.role, self.symbol, value)
+
+    def _practice(self, value: float) -> float:
+        """Behind on its practice quota: make sure this tick is a trade (enter, flip or take profit)."""
+        if abs(value - self.position) >= TRADE_STEP:
+            return value
+        if self.position:
+            return 0.0  # close the open practice position
+        return 1.0 if value >= 0 else -1.0  # open a new one in the signal's direction
+
+    def _trade(self, position: float) -> None:
+        if abs(position - self.position) >= TRADE_STEP:
+            self.workspace["trades_this_hour"] += 1
+            self.workspace["trades_total"] += 1
+        self.position = position
 
     def hear(self, headline: dict) -> None:
         """Read a news headline with what the agent learned at the academy (analysts only)."""

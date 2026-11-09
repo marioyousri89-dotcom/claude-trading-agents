@@ -142,7 +142,8 @@ class EventHub:
             reports = [v["org"] for v in self.shards.values() if "org" in v]
         merged = {d.key: {"name": d.name, "job": d.job, "agents": 0, "active": 0, "sitting_out": 0, "pnl": 0.0,
                           "votes": [], "vote_sum": 0.0, "weight_sum": 0.0, "wins": 0, "experience": 0, "held": 0,
-                          "macro_sum": 0.0, "macro_count": 0,
+                          "macro_sum": 0.0, "macro_count": 0, "traders": 0, "trades_hour_sum": 0,
+                          "trades_hour_min": None, "trades_total": 0,
                           "school": {"trained": 0, "graduates": 0, "exam_sum": 0.0, "course_sums": {}}}
                   for d in DEPARTMENTS}
         for report in reports:
@@ -158,6 +159,11 @@ class EventHub:
                 m["wins"] += dept.get("wins", 0)
                 m["experience"] += dept.get("experience", 0)
                 m["held"] += dept.get("held", 0)
+                for k in ("traders", "trades_hour_sum", "trades_total"):
+                    m[k] += dept.get(k, 0)
+                if dept.get("trades_hour_min") is not None:
+                    m["trades_hour_min"] = (dept["trades_hour_min"] if m["trades_hour_min"] is None
+                                            else min(m["trades_hour_min"], dept["trades_hour_min"]))
                 m["macro_sum"] += dept.get("macro_sum", 0.0)
                 m["macro_count"] += dept.get("macro_count", 0)
                 school = dept.get("school")
@@ -181,6 +187,7 @@ class EventHub:
         latest = max(reports, key=lambda r: r["tick"], default={})
         per_department = control.read(self.events_dir)
         return {"tick": tick, "departments": merged, "managers": manager_reports(merged), "news": latest.get("news", []),
+                "practice": latest.get("practice"),
                 "slider": {"per_department": per_department, "min": control.MIN_DEPARTMENT_SIZE,
                            "max": control.MAX_DEPARTMENT_SIZE, "departments": len(DEPARTMENTS)}}
 

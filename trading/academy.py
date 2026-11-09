@@ -20,6 +20,10 @@ regression) at its own aptitude (learning speed, drawn from its agent id), then
 sits an exam of fresh questions marked against the true textbook answer. It
 needs 70% to pass and gets up to three rounds of lessons.
 
+Training never stops: every practice hour each agent takes a refresher round
+of lessons in every course and re-sits its exams, with one retake (`upgrade`). Benched agents
+who pass get another chance to trade.
+
 What training changes at work:
 - every agent starts with trust in itself set by its exam average, so honours
   graduates start more confident than agents who struggled;
@@ -30,6 +34,7 @@ What training changes at work:
 Everything is simulated. Nothing here touches real money.
 """
 
+import copy
 import math
 import random
 from dataclasses import dataclass
@@ -192,6 +197,7 @@ class Training:
         self.department = department
         self.students = students
         self.results = results
+        self.upgrades = 0
 
     @property
     def average(self) -> float:
@@ -212,18 +218,27 @@ class Training:
                             for k, r in self.results.items()}}
 
 
-def _study(course: str, rng: random.Random, rate: float) -> tuple[Student, Result]:
+def _lessons(student: Student, course: str, rng: random.Random) -> None:
     bank = lesson_bank(course)
+    for _ in range(LESSONS_PER_ROUND):
+        x, truth = bank[rng.randrange(BANK_SIZE)]
+        student.learn(x, truth != (rng.random() < LABEL_NOISE))
+
+
+def _exam(student: Student, course: str, rng: random.Random) -> float:
+    bank = lesson_bank(course)
+    exam = [bank[rng.randrange(BANK_SIZE)] for _ in range(EXAM_QUESTIONS)]
+    return sum(student.answer(x) == truth for x, truth in exam) / EXAM_QUESTIONS
+
+
+def _study(course: str, rng: random.Random, rate: float) -> tuple[Student, Result]:
     student = Student(rate)
     score, rounds, lessons = 0.0, 0, 0
     while rounds < MAX_ROUNDS:
         rounds += 1
-        for _ in range(LESSONS_PER_ROUND):
-            x, truth = bank[rng.randrange(BANK_SIZE)]
-            student.learn(x, truth != (rng.random() < LABEL_NOISE))
-            lessons += 1
-        exam = [bank[rng.randrange(BANK_SIZE)] for _ in range(EXAM_QUESTIONS)]
-        score = sum(student.answer(x) == truth for x, truth in exam) / EXAM_QUESTIONS
+        _lessons(student, course, rng)
+        lessons += LESSONS_PER_ROUND
+        score = _exam(student, course, rng)
         if score >= PASS_MARK:
             break
     return student, Result(course, score, score >= PASS_MARK, rounds, lessons)
@@ -244,9 +259,37 @@ def enroll(agent) -> None:
     """Train an agent for its department's job and let the training shape how it starts work."""
     if getattr(agent, "training", None) is not None or agent.department not in CURRICULUM:
         return
-    agent.training = train(agent.agent_id, agent.department)
+    agent.training = copy.deepcopy(train(agent.agent_id, agent.department))  # its own copy: upgrades change it
     # Exam average 0..1 sets starting trust 0.75..1.25: always above the sit-out level.
     agent.brain.weight = 0.75 + 0.5 * agent.training.average
+
+
+def upgrade(agent, hour: int) -> tuple[float, float] | None:
+    """The hourly refresher: one more round of lessons in every course, then the exams again.
+
+    Returns (exam average before, after). A benched agent that passes everything
+    gets its trust put back just above its sit-out level, so it trades again.
+    """
+    training = getattr(agent, "training", None)
+    if training is None:
+        return None
+    before = training.average
+    rng = random.Random(f"upgrade:{agent.agent_id}:{hour}")
+    for course, student in training.students.items():
+        old = training.results[course]
+        rounds = 0
+        while rounds < 2:  # a refresher round, and one retake if it fails the exam
+            rounds += 1
+            _lessons(student, course, rng)
+            score = _exam(student, course, rng)
+            if score >= PASS_MARK:
+                break
+        training.results[course] = Result(course, score, score >= PASS_MARK, old.rounds + rounds,
+                                          old.lessons + rounds * LESSONS_PER_ROUND)
+    training.upgrades = getattr(training, "upgrades", 0) + 1
+    if agent.brain.sitting_out and training.graduated:
+        agent.brain.weight = agent.brain.sit_out_below * 1.1
+    return before, training.average
 
 
 def should_act(training: Training | None, signal_strength: float, trust: float) -> bool:

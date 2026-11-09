@@ -85,6 +85,41 @@ class AcademyTests(unittest.TestCase):
         self.assertGreater(analyst.macro_view, 0)
 
 
+class PracticeHourTests(unittest.TestCase):
+    def test_every_trader_makes_20_practice_trades_an_hour_and_everyone_upgrades(self):
+        out = io.StringIO()
+        desk = engine.run({"AGENT_COUNT": "1400", "TICKS": "240", "TICK_SECONDS": "0", "PRACTICE_HOUR_TICKS": "120",
+                           "SYMBOLS": "AAPL,BTC"}, stream=out)
+        events = [json.loads(line) for line in out.getvalue().splitlines()]
+        hours = [e for e in events if e["type"] == "hour"]
+        self.assertEqual([h["hour"] for h in hours], [1, 2])
+        for h in hours:
+            self.assertEqual(set(h["trades"]), {"trend", "reversion"})
+            for dept in h["trades"].values():
+                self.assertGreaterEqual(dept["min"], 20)
+                self.assertEqual(dept["under_quota"], 0)
+            self.assertEqual(set(h["upgrade"]), {"trend", "reversion", "research", "risk"})
+        self.assertTrue(all(a.training.upgrades == 2 for a in desk.agents))
+        self.assertTrue(all(a.workspace["trades_total"] >= 40 for a in desk.agents if a.role == "trader"))
+        org = [e for e in events if e["type"] == "org"][-1]
+        self.assertEqual(org["practice"]["last_hour"]["hour"], 2)
+        self.assertIn("practice trades/agent", org["managers"][0]["training"])
+
+    def test_upgrade_retrains_and_gives_benched_graduates_another_chance(self):
+        agent = RegimeAnalyst("research-0042", "X", 10)
+        agent.department = "research"
+        academy.enroll(agent)
+        lessons = sum(r.lessons for r in agent.training.results.values())
+        agent.brain.weight = 0.01  # benched
+        before, after = academy.upgrade(agent, 1)
+        self.assertGreater(sum(r.lessons for r in agent.training.results.values()), lessons)
+        self.assertEqual(agent.training.upgrades, 1)
+        if agent.training.graduated:
+            self.assertFalse(agent.brain.sitting_out)
+        # Each agent's upgrade changes only its own copy of the training.
+        self.assertEqual(academy.train("research-0042", "research").upgrades, 0)
+
+
 class NewsWireTests(unittest.TestCase):
     def test_news_mostly_points_the_way_the_market_leans(self):
         wire = NewsWire(["X"], seed=3)

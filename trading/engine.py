@@ -12,6 +12,9 @@ Configured with environment variables so the same image runs as any shard:
   SEED          market/agent seed (default 42)
   ATS_CONFIG    risk/brain config file (default config/ats_matrix.json)
   LEARNING_INTERVAL_SECONDS  override the config's self-adaptive learning interval
+  PRACTICE_HOUR_TICKS  ticks in one practice hour (default 3600 / TICK_SECONDS, or 7200 when TICK_SECONDS
+                is 0). Each hour every strategy trader makes at least 20 practice trades and every
+                agent takes a refresher course (the hourly upgrade).
   MODE          only "paper" is implemented
 """
 
@@ -77,7 +80,9 @@ def run(env=os.environ, stream=None) -> Desk:
     alpha = BrainAlpha(["trend", "reversion"], float(interval) if interval else cfg.beta.learning_interval_seconds,
                        cfg.beta.learning_enabled)
     limits = RiskLimits(max_drawdown=cfg.risk.max_drawdown)
-    desk = Desk(agents, broker, RiskManager(limits, broker), log, beta=BrainBeta(cfg), alpha=alpha)
+    hour_ticks = int(env.get("PRACTICE_HOUR_TICKS") or (round(3600 / tick_seconds) if tick_seconds else 7200))
+    desk = Desk(agents, broker, RiskManager(limits, broker), log, beta=BrainBeta(cfg), alpha=alpha,
+                hour_ticks=hour_ticks)
     # Every shard sees the same market (same seed), but trades its own agents.
     market = SimulatedMarket(symbols, seed=seed)
     news = NewsWire(symbols, seed=seed)
