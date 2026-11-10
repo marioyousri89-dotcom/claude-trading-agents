@@ -49,8 +49,35 @@ taught to the department whose style fits:
 | Risk | Paul Tudor Jones | Take only 5:1 reward to risk, never trade long below the 200-day average |
 | Risk | Ed Thorp | Never bet more than the Kelly fraction says the edge is worth |
 
+Plus the chart methods from the classic books (`trading/methods.py`), read straight off the chart:
+
+| Department | Master | Method they learn |
+|---|---|---|
+| Trend | W.D. Gann: angles | A trend is strong while price rides above the 1x1 (45-degree) line from the swing low |
+| Trend | Charles Dow | An uptrend makes higher highs and higher lows |
+| Trend | Nicolas Darvas | Buy the break out of the top of a tight box |
+| Trend | William O'Neil | Buy leaders trading near their highs in an uptrend (CAN SLIM) |
+| Trend | R.N. Elliott (Fibonacci) | Buy the pullback that retraces 38.2% to 61.8% of the last swing |
+| Reversion | W.D. Gann: Square of 9 | A stretched move into a Square of 9 level tends to turn |
+| Reversion | W.D. Gann: time cycles | Moves tend to turn 7, 14, 21, 30, 45 or 60 bars after a major high or low |
+| Reversion | Richard Wyckoff | The spring: a dip under support that closes back above it |
+| Reversion | Larry Williams | %R: buy in the bottom 20% of the range, sell in the top 20% |
+
 Like every course, the masters are re-taught and re-examined every practice hour, and the 3D page's Academy
 card shows each department's score per master.
+
+**The masters at work.** Each agent applies the rules *as it learned them* (its own trained model, so a weak
+student follows them badly) to its own practice trades:
+
+- Trend: Livermore, the Turtles, Druckenmiller and the chart methods turn a call into a full-size position when
+  their setup is on the chart; Seykota closes a loser or a broken trend and lets winners run.
+- Reversion: Simons skips fades that aren't stretched enough; Soros, Buffett, Gann (Square of 9, time
+  cycles), Wyckoff and Williams fade at full size when their setup is there.
+- Risk: Kovner shrinks exposure until the stop risks about 1% of capital, Tudor Jones trims it below the long
+  average, Thorp trims what the monitor's own record can't justify.
+
+The Academy card lists how many times each master changed a decision. In three 1,200-tick practice runs, Trend
+profit rose about 20% and Reversion losses roughly halved versus no masters; total desk P&L was about the same.
 
 Each course is a stream of practice lessons with textbook answers, some of them deliberately wrong because
 markets are noisy. Every agent learns each course with its own small model at its own speed, then sits an

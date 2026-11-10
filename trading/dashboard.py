@@ -151,7 +151,7 @@ class EventHub:
         merged = {d.key: {"name": d.name, "job": d.job, "agents": 0, "active": 0, "sitting_out": 0, "pnl": 0.0,
                           "votes": [], "vote_sum": 0.0, "weight_sum": 0.0, "wins": 0, "experience": 0, "held": 0,
                           "macro_sum": 0.0, "macro_count": 0, "traders": 0, "trades_hour_sum": 0,
-                          "trades_hour_min": None, "trades_total": 0,
+                          "trades_hour_min": None, "trades_total": 0, "masters_used": {},
                           "school": {"trained": 0, "graduates": 0, "exam_sum": 0.0, "course_sums": {}}}
                   for d in DEPARTMENTS}
         for report in reports:
@@ -172,6 +172,8 @@ class EventHub:
                 if dept.get("trades_hour_min") is not None:
                     m["trades_hour_min"] = (dept["trades_hour_min"] if m["trades_hour_min"] is None
                                             else min(m["trades_hour_min"], dept["trades_hour_min"]))
+                for course, n in dept.get("masters_used", {}).items():
+                    m["masters_used"][course] = m["masters_used"].get(course, 0) + n
                 m["macro_sum"] += dept.get("macro_sum", 0.0)
                 m["macro_count"] += dept.get("macro_count", 0)
                 school = dept.get("school")

@@ -61,13 +61,16 @@ def summarize(agents, votes: dict[str, float]) -> dict[str, dict]:
     """
     report = {d.key: {"agents": 0, "active": 0, "sitting_out": 0, "vote_sum": 0.0, "pnl": 0.0, "weight_sum": 0.0,
                       "wins": 0, "experience": 0, "held": 0, "macro_sum": 0.0, "macro_count": 0, "votes": [],
-                      "traders": 0, "trades_hour_sum": 0, "trades_hour_min": None, "trades_total": 0}
+                      "traders": 0, "trades_hour_sum": 0, "trades_hour_min": None, "trades_total": 0,
+                      "masters_used": {}}
               for d in DEPARTMENTS}
     members = {d.key: [] for d in DEPARTMENTS}
     for a in agents:
         members[a.department].append(a)
         dept = report[a.department]
         dept["held"] += a.workspace.get("held", 0)
+        for course, n in a.workspace.get("masters", {}).items():
+            dept["masters_used"][course] = dept["masters_used"].get(course, 0) + n
         if a.role == "trader":
             t = a.workspace.get("trades_this_hour", 0)
             dept["traders"] += 1

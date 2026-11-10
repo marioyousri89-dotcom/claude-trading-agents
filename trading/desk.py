@@ -30,6 +30,7 @@ class Desk:
         # Brain Alpha learns how far to trust each trader style ("trend" / "reversion").
         self.alpha = alpha
         self.ticks = 0
+        self.news_view: dict[str, float] = {}  # per symbol, last tick's analysts' news read
         self.last_prices: dict[str, float] = {}
         self.symbols = sorted({a.symbol for a in agents})
         self.news: deque[dict] = deque(maxlen=LATEST_NEWS)
@@ -60,6 +61,8 @@ class Desk:
                     agent.hear(headline)
                 if agent.macro_view is not None:
                     votes[agent.symbol]["macro"].append(agent.macro_view)
+            if agent.role == "trader":
+                agent.news_view = self.news_view.get(agent.symbol)
             vote = agent.observe(prices[agent.symbol])
             if vote is None:
                 continue
@@ -69,6 +72,7 @@ class Desk:
             else:
                 votes[agent.symbol][vote.role].append(vote.value)
 
+        self.news_view = {s: sum(v["macro"]) / len(v["macro"]) for s, v in votes.items() if v["macro"]}
         risk_votes = [v for sym in votes.values() for v in sym["risk"]]
         exposure = sum(risk_votes) / len(risk_votes) if risk_votes else 1.0
         self.risk.update(prices)

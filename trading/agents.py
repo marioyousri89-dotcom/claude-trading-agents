@@ -16,7 +16,7 @@ import statistics
 from collections import deque
 from dataclasses import dataclass
 
-from . import academy
+from . import academy, masters
 from .brain import AgentBrain
 from .org import department_sizes
 
@@ -50,6 +50,7 @@ class Agent:
         self.brain = AgentBrain(agent_id)
         self.training: academy.Training | None = None  # set by academy.enroll
         self.macro_view: float | None = None  # analysts: what the news says, -1 bearish .. 1 bullish
+        self.news_view: float | None = None  # traders: the desk's latest news read for the symbol (Druckenmiller)
         # The agent's own space: nothing else writes here.
         self.workspace = {"votes_cast": 0, "sat_out": 0, "held": 0, "last_signal": None, "last_vote": None,
                           "trades_this_hour": 0, "trades_total": 0}
@@ -81,6 +82,12 @@ class Agent:
             value = 0.0
             self.workspace["held"] += 1
             self.workspace["last_vote"] = value
+        if self.role == "trader" and not self.must_practice:
+            value = masters.advise_trader(self, value)  # the masters' rules, as this agent learned them
+            self.workspace["last_vote"] = value
+        elif self.role == "risk":
+            value = masters.advise_risk(self, value)
+            self.workspace["last_vote"] = value
         if self.role == "trader" and self.must_practice:
             value = self._practice(value)
             self.workspace["last_vote"] = value
@@ -101,6 +108,8 @@ class Agent:
         if abs(position - self.position) >= TRADE_STEP:
             self.workspace["trades_this_hour"] += 1
             self.workspace["trades_total"] += 1
+        if position and (not self.position or (position > 0) != (self.position > 0)):
+            self.workspace["entry"] = self.prices[-1]  # a new position: remember where it started (Seykota's R)
         self.position = position
 
     def hear(self, headline: dict) -> None:
