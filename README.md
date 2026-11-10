@@ -187,6 +187,59 @@ Changing `DASHBOARD_PASSWORD` or `SESSION_SECRET` in Render signs every device o
 - Sessions are signed, `HttpOnly`, `Secure` cookies.
 - Every page sends a strict Content-Security-Policy.
 - Local Docker Compose runs without a login only because its port is bound to `127.0.0.1`.
+- POSTs sent by a browser from another site are refused (Origin check), and JSON APIs need a JSON body.
+- Every page sends `Permissions-Policy` (microphone for this site only; no camera, location or payments)
+  and cross-origin isolation headers.
+- JARVIS needs a second passphrase and rate limits questions (20 a minute) and wrong passphrases.
+
+## JARVIS: your voice assistant with a hologram
+
+Open **/jarvis** (signed in). JARVIS is a hologram of a woman made of light, standing on a projector, who
+listens, talks back and knows the whole application.
+
+- **Voice in and out.** Tap **Listen** and talk. With "only when I say Jarvis" ticked she ignores everything
+  that doesn't start with her name, so a TV or other people in the room don't set her off. Replies are read
+  aloud in a female voice and her lips move while she speaks. You can also type. Voice input works in Chrome,
+  Edge and Safari (the browser's own speech recognition).
+- **She knows the app.** Departments, Atlas, Sage and Sentinel, every agent's brain, the academy, the ten
+  masters, practice hours, the desk, the ring, the Whole Matrix desk, the platforms and the safety rules
+  (`trading/jarvis.py`, `handbook()`), plus a live snapshot of the same reports the dashboard shows. Ask
+  "how is the desk doing?", "what does Atlas say?", "tell me about Risk", "what does Livermore teach?".
+- **Two brains.** Set `ANTHROPIC_API_KEY` and she answers with Claude (`JARVIS_MODEL`, default
+  `claude-opus-5-5`, with the server-side refusal fallback on). Without a key she answers from her built-in
+  handbook and the live numbers, with no network calls. If Claude is unreachable she falls back on her own.
+- **She answers only you.** First the dashboard password, then your passphrase (`JARVIS_PASSPHRASE`, at least
+  8 characters), typed or spoken. That gives a separate signed cookie for 12 hours (`JARVIS_UNLOCK_HOURS`).
+  Five wrong passphrases lock her for 15 minutes. On the internet she stays switched off until a passphrase is
+  set. **Lock** puts her to sleep again. (A browser can't reliably recognise a voice, so the passphrase is the
+  owner check.)
+- **She can't trade.** She only reads reports. She can't place orders, change settings or see secrets.
+
+**Switch her on in Render:** service → **Environment** → add `JARVIS_PASSPHRASE` (and optionally
+`ANTHROPIC_API_KEY`) → **Save**. Render redeploys by itself.
+
+## Real platforms (paper mode, real money locked)
+
+`trading/platforms.py` has connectors for the platforms we'll trade on. Open **/api/platforms** or run
+`python -m trading.platforms` to see each one's mode and which keys are missing.
+
+| Platform | Markets | Prices from | Modes | Keys (environment only) |
+|---|---|---|---|---|
+| Polymarket | prediction markets | public CLOB order book | paper | none for prices |
+| eToro | stocks, crypto, ETFs, FX | eToro Public API rates | paper | `ETORO_API_KEY`, `ETORO_USER_KEY` |
+| MetaTrader 5 | FX, CFDs, indices, metals | the MT5 terminal (Windows) | paper, demo | `MT5_LOGIN`, `MT5_PASSWORD`, `MT5_SERVER` |
+| moomoo | US and HK stocks, options | the OpenD gateway | paper, demo | `MOOMOO_HOST`, `MOOMOO_PORT` |
+
+- **paper** (the default): real prices from the platform, fills on our own paper book. Nothing is sent to the
+  platform's order endpoint.
+- **demo** (`MT5_MODE=demo`, `MOOMOO_MODE=demo`): orders go to the broker's own practice account. MetaTrader
+  checks the login really is a demo account and refuses otherwise; moomoo is hard-coded to its `SIMULATE`
+  account.
+- **Real money is locked.** `LIVE_TRADING_ENABLED = False` in code, `place_order(live=True)` always refuses,
+  and `<PLATFORM>_MODE=live` falls back to paper. Turning real money on needs a reviewed code change after 1 to 2
+  weeks of paper trading on live prices, not just a setting.
+- Keys live only in environment variables, are held by the Vault, and are never shown: status shows key
+  *names* only. A test fails the build if anything that looks like a real key is committed.
 
 ## Running it
 

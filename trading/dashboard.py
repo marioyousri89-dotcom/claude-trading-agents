@@ -11,6 +11,9 @@ Endpoints:
   /events       Server-Sent Events stream of new events
   /api/state    latest tick, leaderboard, agent count per shard, ring heatmap
                 and the Jev decision desk totals (JSON)
+  /jarvis       JARVIS, the owner's voice assistant with the hologram (trading/jarvis.py)
+  /api/jarvis   GET her status; POST /api/jarvis/unlock {"passphrase"} and /api/jarvis/ask {"question"}
+  /api/platforms  real platform connectors: mode and whether keys are set (names only)
   /health       200 once at least one shard is reporting
   /login        password sign-in when the dashboard is reachable from the internet
 
@@ -27,7 +30,8 @@ from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from . import control
+from . import control, platforms
+from .jarvis import UNLOCK_COOKIE, Jarvis, snapshot
 from .org import DEPARTMENTS, finish_school, manager_reports
 from .webauth import COOKIE, WebAuth
 
@@ -40,6 +44,8 @@ STATIC = {
     "/app.js": ("app.js", "text/javascript; charset=utf-8"),
     "/3d.css": ("3d.css", "text/css; charset=utf-8"),
     "/3d.js": ("3d.js", "text/javascript; charset=utf-8"),
+    "/jarvis.css": ("jarvis.css", "text/css; charset=utf-8"),
+    "/jarvis.js": ("jarvis.js", "text/javascript; charset=utf-8"),
     # Vendored so the strict CSP (scripts only from this site) holds and the cloud app needs no CDN.
     "/vendor/three.min.js": ("vendor/three.min.js", "text/javascript; charset=utf-8"),
     "/vendor/lightweight-charts.js": ("vendor/lightweight-charts.js", "text/javascript; charset=utf-8"),
@@ -55,6 +61,8 @@ STATIC = {
 CSP = ("default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; "
        "manifest-src 'self'; worker-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
 MAX_FORM_BYTES = 4096
+# Only JARVIS's page may use the microphone; nothing may use the camera, location or payment APIs.
+PERMISSIONS = "microphone=(self), camera=(), geolocation=(), payment=(), usb=(), interest-cohort=()"
 
 
 class EventHub:
@@ -224,11 +232,13 @@ def _read(name: str) -> bytes:
     return (WEB / name).read_bytes()
 
 
-def make_handler(hub: EventHub, auth: WebAuth | None = None):
+def make_handler(hub: EventHub, auth: WebAuth | None = None, jarvis: Jarvis | None = None):
     auth = auth or WebAuth(None, None, enabled=False)
+    jarvis = jarvis or Jarvis(None, required=auth.enabled)
     assets = {path: (_read(name), ctype) for path, (name, ctype) in STATIC.items()}
     index = _read("index.html")
     cluster_page = _read("3d.html")
+    jarvis_page = _read("jarvis.html")
     login_page = _read("login.html").decode()
 
     class Handler(BaseHTTPRequestHandler):
@@ -247,6 +257,9 @@ def make_handler(hub: EventHub, auth: WebAuth | None = None):
             self.send_header("X-Frame-Options", "DENY")
             self.send_header("Referrer-Policy", "no-referrer")
             self.send_header("Content-Security-Policy", CSP)
+            self.send_header("Permissions-Policy", PERMISSIONS)
+            self.send_header("Cross-Origin-Opener-Policy", "same-origin")
+            self.send_header("Cross-Origin-Resource-Policy", "same-origin")
             if auth.enabled:
                 self.send_header("Strict-Transport-Security", "max-age=31536000")
             for k, v in (extra or {}).items():
@@ -263,12 +276,25 @@ def make_handler(hub: EventHub, auth: WebAuth | None = None):
         def _cookie(self, value: str, max_age: int) -> str:
             return f"{COOKIE}={value}; Path=/; Max-Age={max_age}; HttpOnly; Secure; SameSite=Lax"
 
-        def _session(self) -> str | None:
+        def _session(self, cookie: str = COOKIE) -> str | None:
             for part in self.headers.get("Cookie", "").split(";"):
                 name, _, value = part.strip().partition("=")
-                if name == COOKIE:
+                if name == cookie:
                     return value
             return None
+
+        def _json(self, status: int, body: dict, extra: dict | None = None):
+            self._send(status, json.dumps(body).encode(), "application/json", {"Cache-Control": "no-store", **(extra or {})})
+
+        def _same_origin(self) -> bool:
+            """Refuse POSTs a browser sent from another site (CSRF). Non-browser clients send no Origin."""
+            origin = self.headers.get("Origin")
+            if not origin or origin == "null" and not auth.enabled:
+                return True
+            return urllib.parse.urlsplit(origin).netloc == self.headers.get("Host", "")
+
+        def _jarvis_unlocked(self) -> bool:
+            return jarvis.unlocked(self._session(UNLOCK_COOKIE))
 
         def _authed(self) -> bool:
             return auth.valid(self._session())
@@ -297,7 +323,7 @@ def make_handler(hub: EventHub, auth: WebAuth | None = None):
                 page = login_page.replace("<!--ERROR-->", f'<div class="err">{error}</div>' if error else "")
                 self._send(200, page.encode(), "text/html; charset=utf-8", {"Cache-Control": "no-store"})
             elif not self._authed():
-                if path in ("/", "/3d"):
+                if path in ("/", "/3d", "/jarvis"):
                     self._redirect("/login")
                 else:
                     self._send(401, b'{"error":"sign in required"}', "application/json")
@@ -305,6 +331,12 @@ def make_handler(hub: EventHub, auth: WebAuth | None = None):
                 self._send(200, index, "text/html; charset=utf-8", {"Cache-Control": "no-store"})
             elif path == "/3d":
                 self._send(200, cluster_page, "text/html; charset=utf-8", {"Cache-Control": "no-store"})
+            elif path == "/jarvis":
+                self._send(200, jarvis_page, "text/html; charset=utf-8", {"Cache-Control": "no-store"})
+            elif path == "/api/jarvis":
+                self._json(200, jarvis.status(self._jarvis_unlocked()))
+            elif path == "/api/platforms":
+                self._json(200, {"platforms": platforms.status(), "live_trading": "locked"})
             elif path == "/api/state":
                 self._send(200, json.dumps(hub.state()).encode(), "application/json", {"Cache-Control": "no-store"})
             elif path == "/api/org":
@@ -331,10 +363,14 @@ def make_handler(hub: EventHub, auth: WebAuth | None = None):
                 self.close_connection = True
                 return self._send(413, b"too large", "text/plain", {"Connection": "close"})
             raw = self.rfile.read(length) if length else b""
+            if not self._same_origin():
+                return self._send(403, b'{"error":"cross-site request refused"}', "application/json")
             if path == "/logout":
                 return self._redirect("/login", {"Set-Cookie": self._cookie("", 0)})
             if path == "/api/agents":
                 return self._set_agents(raw)
+            if path in ("/api/jarvis/unlock", "/api/jarvis/ask", "/api/jarvis/lock"):
+                return self._jarvis_post(path, raw)
             if path != "/login" or not auth.enabled:
                 return self._send(404, b"not found", "text/plain")
             client = self._client()
@@ -364,6 +400,44 @@ def make_handler(hub: EventHub, auth: WebAuth | None = None):
             body = {"per_department": per_department, "total": control.total(per_department)}
             self._send(200, json.dumps(body).encode(), "application/json")
 
+        def _jarvis_post(self, path: str, raw: bytes):
+            if not self._authed():
+                return self._json(401, {"error": "sign in required"})
+            if self.headers.get("Content-Type", "").split(";")[0].strip() != "application/json":
+                return self._json(415, {"error": "send JSON"})
+            if path == "/api/jarvis/lock":
+                return self._json(200, {"unlocked": False},
+                                  {"Set-Cookie": f"{UNLOCK_COOKIE}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Strict"})
+            if not jarvis.enabled:
+                return self._json(403, jarvis.status(False))
+            try:
+                body = json.loads(raw or b"null")
+                if not isinstance(body, dict):
+                    raise ValueError
+            except ValueError:
+                return self._json(400, {"error": "bad JSON"})
+            client = self._client()
+            if path == "/api/jarvis/unlock":
+                if not jarvis.unlock_failures.allowed(client):
+                    return self._json(429, {"error": "Too many wrong passphrases. Try again in 15 minutes."})
+                if jarvis.check_passphrase(str(body.get("passphrase", ""))):
+                    jarvis.unlock_failures.clear(client)
+                    cookie = (f"{UNLOCK_COOKIE}={jarvis.issue()}; Path=/; Max-Age={jarvis.ttl}; HttpOnly; Secure; "
+                              "SameSite=Strict")
+                    return self._json(200, {"unlocked": True}, {"Set-Cookie": cookie})
+                jarvis.unlock_failures.hit(client)
+                return self._json(403, {"unlocked": False, "error": "That isn't the passphrase."})
+            if not self._jarvis_unlocked():
+                return self._json(403, {"error": "Say or type your passphrase to wake JARVIS."})
+            question = body.get("question")
+            if not isinstance(question, str) or not question.strip():
+                return self._json(400, {"error": "ask a question"})
+            if not jarvis.questions.allowed(client):
+                return self._json(429, {"error": "Slow down a little: too many questions this minute."})
+            jarvis.questions.hit(client)
+            reply = jarvis.ask(client, question, snapshot(hub.org(), hub.state()))
+            self._json(200, {"reply": reply, "brain": jarvis.brain.name})
+
         def stream(self):
             self._headers(200, "text/event-stream", extra={"Cache-Control": "no-cache", "Connection": "close"})
             self.close_connection = True
@@ -383,10 +457,11 @@ def make_handler(hub: EventHub, auth: WebAuth | None = None):
     return Handler
 
 
-def serve(events_dir: Path, host: str, port: int, auth: WebAuth) -> ThreadingHTTPServer:
+def serve(events_dir: Path, host: str, port: int, auth: WebAuth, jarvis: Jarvis | None = None) -> ThreadingHTTPServer:
     hub = EventHub(events_dir)
     threading.Thread(target=hub.run_tailer, daemon=True).start()
-    server = ThreadingHTTPServer((host, port), make_handler(hub, auth))
+    jarvis = jarvis or Jarvis.from_env(public=auth.enabled)
+    server = ThreadingHTTPServer((host, port), make_handler(hub, auth, jarvis))
     server.daemon_threads = True
     mode = "password login on" if auth.enabled else "no login (local only)"
     print(f"dashboard on http://{host}:{port} reading {events_dir} ({mode})", flush=True)

@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>JARVIS</title>
+<meta name="theme-color" content="#02060c">
+<link rel="icon" href="/icons/favicon-32.png" sizes="32x32">
+<link rel="stylesheet" href="/jarvis.css">
+</head><body>
+<header><b>JARVIS</b>
+ <span class="mut">your assistant · paper mode</span>
+ <a href="/">live log</a> <a href="/3d">3D view</a>
+ <form method="post" action="/logout"><button type="submit">Sign out</button></form></header>
+<main>
+ <section id="stage" aria-label="JARVIS hologram">
+  <div id="holo"></div>
+  <div id="state" class="mut">starting…</div>
+ </section>
+ <section id="panel">
+  <div id="lock" class="card hidden">
+   <h3>Wake JARVIS</h3>
+   <p class="mut">She answers only you. Say or type your passphrase.</p>
+   <form id="unlockForm"><input id="pass" type="password" autocomplete="current-password" placeholder="Passphrase" aria-label="Passphrase">
+    <button type="submit">Unlock</button> <button type="button" id="sayPass">Say it</button></form>
+   <div id="lockMsg" class="mut"></div>
+  </div>
+  <div id="off" class="card hidden"><h3>JARVIS is switched off</h3><p id="offMsg" class="mut"></p></div>
+  <div id="talk" class="card hidden">
+   <div class="controls">
+    <button id="mic" type="button" aria-pressed="false">🎙 Listen</button>
+    <label class="mut"><input id="wake" type="checkbox" checked> only when I say "Jarvis"</label>
+    <label class="mut"><input id="voiceOn" type="checkbox" checked> speak replies</label>
+    <button id="lockBtn" type="button" class="ghost">Lock</button>
+   </div>
+   <form id="askForm"><input id="q" maxlength="500" placeholder="Ask JARVIS… e.g. how is the desk doing?" aria-label="Question" autocomplete="off">
+    <button type="submit">Ask</button></form>
+   <div id="brain" class="mut"></div>
+   <div id="log" aria-live="polite"></div>
+  </div>
+ </section>
+</main>
+<script src="/vendor/three.min.js"></script>
+<script src="/jarvis.js"></script>
+</body></html>

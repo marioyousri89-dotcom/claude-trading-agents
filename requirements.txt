@@ -1,0 +1,2 @@
+# Optional: gives JARVIS a Claude brain when ANTHROPIC_API_KEY is set. Everything else is standard library.
+anthropic>=2.7,<3
