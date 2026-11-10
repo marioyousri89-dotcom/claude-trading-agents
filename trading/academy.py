@@ -12,6 +12,10 @@ Each department has its own curriculum:
   **how to trade** (take a trade only when win rate x payoff beats the loss).
 - Risk studies **volatility** (when to cut size) and **drawdowns** (when a
   losing streak or a drop in equity means de-risk).
+- On top, every strategy and risk agent studies **the masters** (trading/masters.py):
+  ten great traders' rules. Trend learns Livermore, Dennis (Turtles), Seykota and
+  Druckenmiller; Reversion learns Soros, Simons and Buffett; Risk learns Kovner,
+  Tudor Jones and Thorp.
 
 How it works: a course is a stream of practice lessons with known textbook
 answers. Real life is noisy, so some practice answers are wrong on purpose.
@@ -39,6 +43,8 @@ import math
 import random
 from dataclasses import dataclass
 from functools import lru_cache
+
+from . import masters
 
 PASS_MARK = 0.7
 LESSONS_PER_ROUND = 100
@@ -82,12 +88,14 @@ COURSES = {c.key: c for c in (
     Course("volatility", "Volatility", "Know when the market is too wild for full size", ("full size", "cut size")),
     Course("drawdown", "Drawdowns", "De-risk after a big drop or a losing streak", ("stay", "de-risk")),
 )}
+# The masters (trading/masters.py): one course per great trader, taught to the department that fits their style.
+COURSES.update({m.course: Course(m.course, m.name, m.rule, m.answers) for m in masters.MASTERS})
 
 CURRICULUM = {
     "research": ("politics", "economy", "regimes"),
-    "trend": ("reading_numbers", "decisions", "trading"),
-    "reversion": ("reading_numbers", "decisions", "trading"),
-    "risk": ("volatility", "drawdown"),
+    "trend": ("reading_numbers", "decisions", "trading") + masters.courses_for("trend"),
+    "reversion": ("reading_numbers", "decisions", "trading") + masters.courses_for("reversion"),
+    "risk": ("volatility", "drawdown") + masters.courses_for("risk"),
 }
 
 
@@ -149,7 +157,8 @@ def _drawdown(rng):
 
 
 LESSONS = {"politics": _politics, "economy": _economy, "regimes": _regimes, "reading_numbers": _reading_numbers,
-           "decisions": _decisions, "trading": _trading, "volatility": _volatility, "drawdown": _drawdown}
+           "decisions": _decisions, "trading": _trading, "volatility": _volatility, "drawdown": _drawdown,
+           **masters.LESSONS}
 
 
 @lru_cache(maxsize=None)

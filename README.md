@@ -33,6 +33,25 @@ curriculum:
 | Trend and Reversion (decision makers) | **Reading numbers** (read a chart's return, moving-average gap and slope), **Making decisions** (act only when the edge pays for the cost), **How to trade** (take a trade only when win rate x payoff beats the loss) |
 | Risk | Volatility (when to cut size), Drawdowns (de-risk after a big drop or a losing streak) |
 
+**The masters** (`trading/masters.py`): ten great traders' documented rules, each its own course and exam,
+taught to the department whose style fits:
+
+| Department | Master | Rule they learn |
+|---|---|---|
+| Trend | Jesse Livermore | Buy only when price breaks to a new high on heavy volume |
+| Trend | Richard Dennis (Turtles) | Enter when price breaks its 20-day high or low |
+| Trend | Ed Seykota | Cut losses, ride winners: hold while the trend holds and the stop isn't hit |
+| Trend | Stanley Druckenmiller | Bet big only when the trend and liquidity agree |
+| Reversion | George Soros | Reflexivity: fade a boom once price is far above value and buying is tiring |
+| Reversion | Jim Simons | Fade a stretched price, but only if it usually snaps back fast |
+| Reversion | Warren Buffett | Be greedy when others are fearful, with a margin of safety |
+| Risk | Bruce Kovner | Stop where you're proven wrong, size so it risks about 1% of capital |
+| Risk | Paul Tudor Jones | Take only 5:1 reward to risk, never trade long below the 200-day average |
+| Risk | Ed Thorp | Never bet more than the Kelly fraction says the edge is worth |
+
+Like every course, the masters are re-taught and re-examined every practice hour, and the 3D page's Academy
+card shows each department's score per master.
+
 Each course is a stream of practice lessons with textbook answers, some of them deliberately wrong because
 markets are noisy. Every agent learns each course with its own small model at its own speed, then sits an
 exam marked against the true answer. 70% passes, with up to three rounds of lessons. About 98% graduate.

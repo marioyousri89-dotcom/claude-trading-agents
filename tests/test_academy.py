@@ -2,7 +2,7 @@ import io
 import json
 import unittest
 
-from trading import academy, engine
+from trading import academy, engine, masters
 from trading.agents import Momentum, RegimeAnalyst, build_team
 from trading.news import NewsWire
 
@@ -11,8 +11,8 @@ class AcademyTests(unittest.TestCase):
     def test_each_department_studies_its_own_job(self):
         self.assertEqual(academy.CURRICULUM["research"][:2], ("politics", "economy"))
         for dept in ("trend", "reversion"):
-            self.assertEqual(academy.CURRICULUM[dept], ("reading_numbers", "decisions", "trading"))
-        self.assertEqual(academy.CURRICULUM["risk"], ("volatility", "drawdown"))
+            self.assertEqual(academy.CURRICULUM[dept][:3], ("reading_numbers", "decisions", "trading"))
+        self.assertEqual(academy.CURRICULUM["risk"][:2], ("volatility", "drawdown"))
         t = academy.train("research-0007", "research")
         self.assertEqual(set(t.results), {"politics", "economy", "regimes"})
 
@@ -83,6 +83,42 @@ class AcademyTests(unittest.TestCase):
         analyst.macro_view = None
         analyst.hear({"symbol": "X", "kind": "economy", "event": "jobs", "value": 2.0})
         self.assertGreater(analyst.macro_view, 0)
+
+
+class MastersTests(unittest.TestCase):
+    def test_ten_masters_are_taught_to_the_department_that_fits(self):
+        self.assertEqual(len(masters.MASTERS), 10)
+        self.assertEqual(masters.courses_for("trend"), ("livermore", "turtles", "seykota", "druckenmiller"))
+        self.assertEqual(masters.courses_for("reversion"), ("soros", "simons", "buffett"))
+        self.assertEqual(masters.courses_for("risk"), ("kovner", "tudor_jones", "thorp"))
+        for m in masters.MASTERS:
+            self.assertIn(m.course, academy.CURRICULUM[m.department])
+            self.assertEqual(academy.COURSES[m.course].name, m.name)
+        self.assertFalse(set(masters.BY_COURSE) & set(academy.CURRICULUM["research"]))
+
+    def test_agents_pass_the_masters_exams_and_learn_their_rules(self):
+        for dept in ("trend", "reversion", "risk"):
+            trained = [academy.train(f"{dept}-{i:04d}", dept) for i in range(60)]
+            for course in masters.courses_for(dept):
+                self.assertGreater(sum(t.results[course].score for t in trained) / 60, 0.78, course)
+        def best(dept, course):
+            return max((academy.train(f"{dept}-{i:04d}", dept) for i in range(60)),
+                       key=lambda t: t.results[course].score).students[course]
+        livermore = best("trend", "livermore")
+        self.assertTrue(livermore.answer({"breakout": 1.5, "volume": 0.8}))  # new high, heavy volume: buy
+        self.assertFalse(livermore.answer({"breakout": -1.5, "volume": 0.8}))  # still below the high: wait
+        seykota = best("trend", "seykota")
+        self.assertFalse(seykota.answer({"pnl_r": -0.9, "trend": -1.5}))  # trend broken: cut the loss
+        self.assertTrue(seykota.answer({"pnl_r": 1.5, "trend": 1.5}))  # winner, trend intact: ride it
+        simons = best("reversion", "simons")
+        self.assertTrue(simons.answer({"stretch": 3.5, "half_life": 0.2}))
+        self.assertFalse(simons.answer({"stretch": 0.3, "half_life": 1.5}))
+        kovner = best("risk", "kovner")
+        self.assertTrue(kovner.answer({"stop": 2.0, "size": 2.0, "risk": 4.0}))  # 4% of capital at risk: too big
+        self.assertFalse(kovner.answer({"stop": 0.5, "size": 0.4, "risk": 0.2}))
+        thorp = best("risk", "thorp")
+        self.assertTrue(thorp.answer({"bet": 1.8, "kelly": 0.2}))  # betting far past Kelly
+        self.assertFalse(thorp.answer({"bet": 0.2, "kelly": 1.2}))
 
 
 class PracticeHourTests(unittest.TestCase):
