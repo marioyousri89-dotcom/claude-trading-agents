@@ -100,7 +100,7 @@ def handbook() -> str:
     for dept, courses in academy.CURRICULUM.items():
         names = ", ".join(academy.COURSES[c].name for c in courses)
         lines.append(f"- {dept}: {names}")
-    lines += ["", "THE MASTERS (ten great traders, each a course and exam):"]
+    lines += ["", f"THE MASTERS ({len(masters.MASTERS)} legendary traders and methods, each a course and exam, and they advise live practice trades):"]
     for m in masters.MASTERS:
         lines.append(f"- {m.name} ({m.department}): {m.rule}. Known for: {m.known_for}.")
     lines += [
@@ -196,13 +196,19 @@ class BuiltinBrain:
             calls = "; ".join(f"{m['manager']}: {m['call']}" for m in snap.get("managers") or [])
             return ("The managers are Atlas for trading, Sage for research and Sentinel for risk. "
                     + (f"Right now: {calls}." if calls else "They haven't reported yet."))
-        if has("master", "livermore", "soros", "buffett", "simons", "turtle", "seykota", "druckenmiller", "kovner",
-               "tudor", "thorp"):
+        plain = re.sub(r"[^\w\s]", "", q)
+        named = [m for m in masters.MASTERS
+                 if re.search(rf"\b({m.course.split('_')[0]}|{re.escape(m.name.split()[-1].lower())})\b", plain)
+                 or (m.course == "turtles" and "turtle" in plain)]
+        if named:
+            return " ".join(f"{m.name} teaches the {m.department} department: {m.rule}. Known for: {m.known_for}."
+                            for m in named[:3])
+        if has("master", "legend", "great trader"):
+            by_dept = {}
             for m in masters.MASTERS:
-                if has(m.course.split("_")[0], m.name.split()[-1].lower()):
-                    return f"{m.name} teaches the {m.department} department: {m.rule}. Known for: {m.known_for}."
-            return ("Ten masters teach the agents: Livermore, the Turtles, Seykota and Druckenmiller teach Trend; "
-                    "Soros, Simons and Buffett teach Reversion; Kovner, Tudor Jones and Thorp teach Risk.")
+                by_dept.setdefault(m.department, []).append(m.name.split(":")[0].split(" (")[0])
+            parts = [f"{d.title()}: {', '.join(dict.fromkeys(names))}" for d, names in by_dept.items()]
+            return f"{len(masters.MASTERS)} master courses teach the agents. " + ". ".join(parts) + "."
         if has("academy", "train", "school", "exam", "course", "learn", "practice"):
             grads = sum(x["graduates"] for x in depts.values())
             trained = sum(x["trained"] for x in depts.values())

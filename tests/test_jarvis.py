@@ -66,6 +66,8 @@ class BuiltinBrainTests(unittest.TestCase):
         self.assertIn("locked", ask("which platforms are connected?"))
         self.assertIn("Soros", ask("who are the masters"))
         self.assertIn("Livermore", ask("what does Livermore teach"))
+        self.assertIn("Gann", ask("tell me about Gann"))
+        self.assertIn("19 master", ask("who are the masters"))
         self.assertIn("Fed holds rates", ask("any news"))
         self.assertIn("JARVIS", ask("who are you"))
         self.assertIn("haven't reported", self.brain.answer("status", {}))
