@@ -1,0 +1,31 @@
+:root{--bg:#02060c;--fg:#dff7ff;--mut:#7f9aa8;--holo:#4ff3ff;--card:#07121c;--line:#123040;--acc:#4ff3ff;--dn:#ff6b6b}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif;min-height:100vh}
+header{padding:10px 16px;border-bottom:1px solid var(--line);display:flex;gap:12px;align-items:baseline;flex-wrap:wrap}
+header b{letter-spacing:.3em;color:var(--holo)}
+header a{color:var(--acc)}
+header form{margin-left:auto}
+header button,.ghost{background:transparent;color:var(--mut);border:1px solid var(--line);border-radius:4px;padding:2px 8px}
+.mut{color:var(--mut)}
+.hidden{display:none!important}
+main{display:grid;grid-template-columns:minmax(0,1fr) 420px;gap:12px;padding:12px 16px}
+@media (max-width:900px){main{grid-template-columns:minmax(0,1fr)}#stage{height:52vh}}
+#stage{position:relative;height:80vh;min-height:360px;border:1px solid var(--line);border-radius:10px;overflow:hidden;
+ background:radial-gradient(ellipse at 50% 85%,#06293a 0%,#02060c 65%)}
+#holo{position:absolute;inset:0}
+#holo canvas{display:block}
+#state{position:absolute;left:0;right:0;bottom:12px;text-align:center;letter-spacing:.15em;text-transform:uppercase;font-size:12px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin-bottom:12px}
+.card h3{margin:0 0 6px;font-size:14px;color:var(--holo)}
+form{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0}
+input[type=password],input#q{flex:1;min-width:0;background:#020b12;color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:8px 10px;font:inherit}
+button{background:#0b3a4a;color:var(--fg);border:1px solid #1b6a80;border-radius:6px;padding:7px 12px;font:inherit;cursor:pointer}
+button:hover{border-color:var(--holo)}
+#mic[aria-pressed=true]{background:#0f6b7d;box-shadow:0 0 12px var(--holo)}
+.controls{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+#log{max-height:52vh;overflow:auto;display:flex;flex-direction:column;gap:8px;margin-top:8px}
+.msg{padding:8px 10px;border-radius:8px;border:1px solid var(--line)}
+.me{align-self:flex-end;background:#0a1d2a;max-width:85%}
+.her{align-self:flex-start;background:#04202a;border-color:#145a6a;max-width:92%}
+.her b{color:var(--holo)}
+.err{color:var(--dn)}
