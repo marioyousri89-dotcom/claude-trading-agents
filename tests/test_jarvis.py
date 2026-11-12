@@ -106,12 +106,29 @@ class ClaudeBrainTests(unittest.TestCase):
 class OwnerOnlyTests(unittest.TestCase):
     def test_fails_closed_on_the_internet_without_passphrase(self):
         j = J.Jarvis(None, required=True)
-        self.assertFalse(j.enabled)
+        self.assertTrue(j.needs_setup)
         self.assertFalse(j.unlocked(j.issue()))
-        self.assertIn("JARVIS_PASSPHRASE", j.status(False)["reason"])
+        self.assertFalse(j.check_passphrase(""))
         self.assertTrue(J.Jarvis(None, required=False).unlocked(None))  # local use
+        self.assertFalse(J.Jarvis(None, required=False).needs_setup)
         with self.assertRaises(SystemExit):
             J.Jarvis("short", required=True)
+
+    def test_owner_chooses_passphrase_once_and_it_survives_restart(self):
+        with tempfile.TemporaryDirectory() as d:
+            store = Path(d, "jarvis_owner.json")
+            j = J.Jarvis(None, required=True, secret="s", store=store)
+            with self.assertRaises(ValueError):
+                j.setup("short")
+            self.assertTrue(j.setup(PHRASE))
+            self.assertFalse(j.setup("someone else now"))  # only once
+            self.assertTrue(j.check_passphrase(PHRASE.lower() + "!"))
+            self.assertTrue(j.unlocked(j.issue()))
+            self.assertNotIn("pod bay", store.read_text())  # stored hashed, never in plain text
+            again = J.Jarvis(None, required=True, secret="s", store=store)
+            self.assertFalse(again.needs_setup)
+            self.assertTrue(again.check_passphrase(PHRASE))
+            self.assertFalse(again.check_passphrase("wrong phrase here"))
 
     def test_passphrase_and_tokens(self):
         clock = Clock()
@@ -203,6 +220,31 @@ class JarvisServerTests(unittest.TestCase):
         self.assertEqual(resp.status, 200)
         self.assertEqual(body["brain"], "built-in")
         self.assertTrue(body["reply"])
+
+    def test_first_visit_setup(self):
+        fresh = J.Jarvis(None, required=True, secret="s")
+        hub = EventHub(Path(self.tmp.name))
+        server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(hub, WebAuth(PASSWORD, "secret"), fresh))
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            port = self.server.server_port
+            self.server.server_port = server.server_port  # reuse self.api against the fresh server
+            resp, body = self.api("/api/jarvis/ask", {"question": "hi"})
+            self.assertEqual(resp.status, 403)
+            resp, body = self.api("/api/jarvis/setup", {"passphrase": "abc"})
+            self.assertEqual(resp.status, 400)
+            resp, body = self.api("/api/jarvis/setup", {"passphrase": PHRASE})
+            self.assertTrue(body["unlocked"])
+            token = resp.getheader("Set-Cookie").split(";")[0].split("=", 1)[1]
+            self.assertEqual(self.api("/api/jarvis/ask", {"question": "hi"}, token)[0].status, 200)
+            self.assertEqual(self.api("/api/jarvis/setup", {"passphrase": "takeover attempt"})[0].status, 409)
+            resp, _ = self.request("POST", "/api/jarvis/setup", json.dumps({"passphrase": PHRASE}),
+                                   {"Content-Type": "application/json"})
+            self.assertEqual(resp.status, 401)  # never without the dashboard login
+        finally:
+            self.server.server_port = port
+            server.shutdown()
+            server.server_close()
 
     def test_unlock_needs_login(self):
         resp, _ = self.request("POST", "/api/jarvis/unlock", json.dumps({"passphrase": PHRASE}),

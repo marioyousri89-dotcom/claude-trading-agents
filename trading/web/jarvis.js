@@ -263,14 +263,24 @@
     state.enabled = s.enabled; state.unlocked = s.unlocked;
     $("off").classList.toggle("hidden", s.enabled);
     $("offMsg").textContent = s.reason || "";
-    $("lock").classList.toggle("hidden", !s.enabled || s.unlocked);
+    $("setup").classList.toggle("hidden", !s.needs_setup);
+    $("lock").classList.toggle("hidden", !s.enabled || s.unlocked || s.needs_setup);
     $("talk").classList.toggle("hidden", !s.unlocked);
     $("brain").textContent = s.unlocked ? (s.brain === "claude" ? "Brain: Claude" : "Brain: built-in handbook (add ANTHROPIC_API_KEY for Claude)") : "";
-    setState(!s.enabled ? "offline" : s.unlocked ? "ready" : "locked");
-    if (!s.unlocked) stopListening();
+    if (!s.unlocked && wantListen) stopListening();
+    setState(!s.enabled ? "offline" : s.unlocked ? "ready" : s.needs_setup ? "choose a passphrase" : "locked");
   }
 
   // ---------- Wire up ----------
+  $("setupForm").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const a = $("newPass").value, b = $("newPass2").value;
+    if (a !== b) { $("setupMsg").textContent = "The two don't match."; return; }
+    const r = await post("/api/jarvis/setup", { passphrase: a });
+    $("newPass").value = $("newPass2").value = "";
+    if (r.ok) { $("setupMsg").textContent = ""; await refresh(); speak("Thank you. I'll answer only to that phrase. What would you like to know?"); }
+    else $("setupMsg").textContent = r.data.error || "That didn't work.";
+  });
   $("unlockForm").addEventListener("submit", (e) => { e.preventDefault(); if ($("pass").value) unlock($("pass").value); });
   $("sayPass").addEventListener("click", () => {
     if (!Recognition) { $("lockMsg").textContent = "Voice isn't supported in this browser; type it instead."; return; }
