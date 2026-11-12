@@ -7,10 +7,11 @@ Two brains:
 
 Owner only:
 - The dashboard login comes first (trading/webauth.py).
-- Then the owner wakes her with a passphrase (JARVIS_PASSPHRASE, spoken or typed). That issues a
-  separate signed unlock cookie that lasts JARVIS_UNLOCK_HOURS (default 12).
-- Wrong passphrases are rate limited (5 per client per 15 minutes) and she refuses to work on a
-  public address when no passphrase is set (fails closed).
+- Then the owner wakes her with a passphrase, spoken or typed. It comes from JARVIS_PASSPHRASE or,
+  if that isn't set, the owner chooses it on first visit and it is stored hashed (PBKDF2) next to the
+  events. Unlocking issues a separate signed cookie that lasts JARVIS_UNLOCK_HOURS (default 12).
+- Wrong passphrases are rate limited (5 per client per 15 minutes). On a public address she answers
+  nothing until a passphrase exists (fails closed).
 - Questions are rate limited per client and capped in length.
 - She never trades and never reads secrets: she only reads the same reports the dashboard shows.
 """
@@ -23,6 +24,7 @@ import re
 import secrets
 import time
 from collections import defaultdict, deque
+from pathlib import Path
 
 from . import academy, masters, platforms
 from .org import DEPARTMENTS, MANAGERS
@@ -279,42 +281,90 @@ def make_brain(env=os.environ):
 
 
 class Jarvis:
+    """Owner gate and conversation. The passphrase comes from JARVIS_PASSPHRASE, or the owner chooses it
+    on first visit (signed in with the dashboard password) and it is stored hashed in `store`."""
+
+    PBKDF2_ROUNDS = 200_000
+
     def __init__(self, passphrase: str | None, required: bool, brain=None, unlock_hours: float = 12,
-                 secret: str | None = None, clock=time.time):
+                 secret: str | None = None, clock=time.time, store=None):
         if passphrase is not None and len(passphrase) < MIN_PASSPHRASE_LENGTH:
             raise SystemExit(f"JARVIS_PASSPHRASE must be at least {MIN_PASSPHRASE_LENGTH} characters.")
         self.required = required  # True when the app is reachable from the internet
-        self.enabled = passphrase is not None or not required  # fails closed: public with no passphrase
+        self.enabled = True
         self.brain = brain or BuiltinBrain()
         self.clock = clock
         self.ttl = int(unlock_hours * 3600)
-        self._digest = hashlib.sha256(_normalize(passphrase or "").encode()).digest()
-        self._key = hmac.new((secret or secrets.token_hex(32)).encode(), b"jarvis" + self._digest,
-                             hashlib.sha256).digest()
-        self._passphrase_set = passphrase is not None
+        self.store = store
+        self._secret = (secret or secrets.token_hex(32)).encode()
+        self._salt = None  # set when the passphrase was chosen in the app (PBKDF2)
+        self._passphrase_set = False
+        if passphrase is not None:
+            self._set_digest(hashlib.sha256(_normalize(passphrase).encode()).digest())
+        elif store is not None:
+            self._load(store)
+        if not self._passphrase_set:
+            self._set_digest(b"")
         self.unlock_failures = RateLimiter(UNLOCK_FAILURES, FAILURE_WINDOW, clock)
         self.questions = RateLimiter(QUESTIONS_PER_MINUTE, 60, clock)
         self._history: dict[str, deque] = {}
 
+    def _set_digest(self, digest: bytes, salt: bytes | None = None) -> None:
+        self._digest, self._salt = digest, salt
+        self._passphrase_set = bool(digest)
+        self._key = hmac.new(self._secret, b"jarvis" + digest, hashlib.sha256).digest()
+
+    def _hash(self, phrase: str, salt: bytes) -> bytes:
+        return hashlib.pbkdf2_hmac("sha256", _normalize(phrase).encode(), salt, self.PBKDF2_ROUNDS)
+
+    def _load(self, store) -> None:
+        try:
+            data = json.loads(Path(store).read_text())
+            self._set_digest(bytes.fromhex(data["hash"]), bytes.fromhex(data["salt"]))
+        except (OSError, ValueError, KeyError):
+            pass
+
     @classmethod
-    def from_env(cls, public: bool, env=os.environ) -> "Jarvis":
+    def from_env(cls, public: bool, env=os.environ, store=None) -> "Jarvis":
         passphrase = env.get("JARVIS_PASSPHRASE") or None
         return cls(passphrase, public, make_brain(env), float(env.get("JARVIS_UNLOCK_HOURS", 12)),
-                   env.get("SESSION_SECRET"))
+                   env.get("SESSION_SECRET"), store=store)
 
     @property
     def needs_passphrase(self) -> bool:
         return self._passphrase_set
 
+    @property
+    def needs_setup(self) -> bool:
+        """On the internet with no passphrase yet: the signed-in owner chooses one first."""
+        return self.required and not self._passphrase_set
+
+    def setup(self, phrase: str) -> bool:
+        """Set the passphrase once, from the app. Refused if one is already set."""
+        if not self.needs_setup:
+            return False
+        if len(_normalize(phrase)) < MIN_PASSPHRASE_LENGTH:
+            raise ValueError(f"Choose a passphrase of at least {MIN_PASSPHRASE_LENGTH} characters.")
+        salt = secrets.token_bytes(16)
+        digest = self._hash(phrase, salt)
+        if self.store is not None:
+            tmp = f"{self.store}.tmp"
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w") as f:
+                json.dump({"salt": salt.hex(), "hash": digest.hex(), "rounds": self.PBKDF2_ROUNDS}, f)
+            os.replace(tmp, self.store)
+        self._set_digest(digest, salt)
+        return True
+
     def status(self, unlocked: bool) -> dict:
-        reason = None if self.enabled else "Set JARVIS_PASSPHRASE on the server to switch JARVIS on."
-        return {"enabled": self.enabled, "unlocked": self.enabled and unlocked, "brain": self.brain.name,
-                "needs_passphrase": self.needs_passphrase, "reason": reason}
+        return {"enabled": self.enabled, "unlocked": unlocked, "brain": self.brain.name,
+                "needs_passphrase": self.needs_passphrase, "needs_setup": self.needs_setup, "reason": None}
 
     def check_passphrase(self, attempt: str) -> bool:
         if not self._passphrase_set:
             return False
-        got = hashlib.sha256(_normalize(attempt).encode()).digest()
+        got = (self._hash(attempt, self._salt) if self._salt else
+               hashlib.sha256(_normalize(attempt).encode()).digest())
         return hmac.compare_digest(got, self._digest)
 
     def _sign(self, payload: str) -> str:
@@ -325,10 +375,8 @@ class Jarvis:
         return f"{payload}.{self._sign(payload)}"
 
     def unlocked(self, token: str | None) -> bool:
-        if not self.enabled:
-            return False
         if not self._passphrase_set:
-            return True  # local use with no passphrase
+            return not self.required  # local use with no passphrase; on the internet, set one first
         if not token or token.count(".") != 2:
             return False
         payload, sig = token.rsplit(".", 1)

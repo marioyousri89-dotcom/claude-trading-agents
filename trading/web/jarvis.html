@@ -15,6 +15,14 @@
   <div id="state" class="mut">starting…</div>
  </section>
  <section id="panel">
+  <div id="setup" class="card hidden">
+   <h3>Choose your passphrase</h3>
+   <p class="mut">First time only. Pick a phrase only you know (8+ characters, e.g. three words). You'll type or say it to wake JARVIS.</p>
+   <form id="setupForm"><input id="newPass" type="password" autocomplete="new-password" placeholder="New passphrase" aria-label="New passphrase">
+    <input id="newPass2" type="password" autocomplete="new-password" placeholder="Same again" aria-label="Repeat passphrase">
+    <button type="submit">Save</button></form>
+   <div id="setupMsg" class="mut"></div>
+  </div>
   <div id="lock" class="card hidden">
    <h3>Wake JARVIS</h3>
    <p class="mut">She answers only you. Say or type your passphrase.</p>

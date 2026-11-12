@@ -235,15 +235,17 @@ listens, talks back and knows the whole application.
 - **Two brains.** Set `ANTHROPIC_API_KEY` and she answers with Claude (`JARVIS_MODEL`, default
   `claude-opus-5-5`, with the server-side refusal fallback on). Without a key she answers from her built-in
   handbook and the live numbers, with no network calls. If Claude is unreachable she falls back on her own.
-- **She answers only you.** First the dashboard password, then your passphrase (`JARVIS_PASSPHRASE`, at least
-  8 characters), typed or spoken. That gives a separate signed cookie for 12 hours (`JARVIS_UNLOCK_HOURS`).
-  Five wrong passphrases lock her for 15 minutes. On the internet she stays switched off until a passphrase is
-  set. **Lock** puts her to sleep again. (A browser can't reliably recognise a voice, so the passphrase is the
+- **She answers only you.** First the dashboard password, then your passphrase (at least 8 characters), typed
+  or spoken. On your first visit to /jarvis you choose it right there (it is stored hashed with PBKDF2 next to
+  the events, never in plain text). Set `JARVIS_PASSPHRASE` in Render instead if you want it fixed across
+  redeploys: Render's disk is wiped on each deploy, so without it she asks you to choose again after an update. That gives a separate signed cookie for 12 hours (`JARVIS_UNLOCK_HOURS`).
+  Five wrong passphrases lock her for 15 minutes. On the internet she answers nothing until a passphrase is
+  set, and only someone signed in with the dashboard password can set it, once. **Lock** puts her to sleep again. (A browser can't reliably recognise a voice, so the passphrase is the
   owner check.)
 - **She can't trade.** She only reads reports. She can't place orders, change settings or see secrets.
 
-**Switch her on in Render:** service → **Environment** → add `JARVIS_PASSPHRASE` (and optionally
-`ANTHROPIC_API_KEY`) → **Save**. Render redeploys by itself.
+**Switch her on:** sign in, open /jarvis and choose your passphrase. Optional: in Render, service →
+**Environment** → add `JARVIS_PASSPHRASE` (fixed passphrase) and/or `ANTHROPIC_API_KEY` (Claude brain) → **Save**.
 
 ## Real platforms (paper mode, real money locked)
 

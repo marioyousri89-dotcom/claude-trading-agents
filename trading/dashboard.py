@@ -371,7 +371,7 @@ def make_handler(hub: EventHub, auth: WebAuth | None = None, jarvis: Jarvis | No
                 return self._redirect("/login", {"Set-Cookie": self._cookie("", 0)})
             if path == "/api/agents":
                 return self._set_agents(raw)
-            if path in ("/api/jarvis/unlock", "/api/jarvis/ask", "/api/jarvis/lock"):
+            if path in ("/api/jarvis/unlock", "/api/jarvis/ask", "/api/jarvis/lock", "/api/jarvis/setup"):
                 return self._jarvis_post(path, raw)
             if path != "/login" or not auth.enabled:
                 return self._send(404, b"not found", "text/plain")
@@ -419,6 +419,18 @@ def make_handler(hub: EventHub, auth: WebAuth | None = None, jarvis: Jarvis | No
             except ValueError:
                 return self._json(400, {"error": "bad JSON"})
             client = self._client()
+            if path == "/api/jarvis/setup":
+                if not jarvis.needs_setup:
+                    return self._json(409, {"error": "A passphrase is already set."})
+                try:
+                    jarvis.setup(str(body.get("passphrase", "")))
+                except ValueError as e:
+                    return self._json(400, {"error": str(e)})
+                except OSError:
+                    return self._json(503, {"error": "Could not save the passphrase."})
+                cookie = (f"{UNLOCK_COOKIE}={jarvis.issue()}; Path=/; Max-Age={jarvis.ttl}; HttpOnly; Secure; "
+                          "SameSite=Strict")
+                return self._json(200, {"unlocked": True}, {"Set-Cookie": cookie})
             if path == "/api/jarvis/unlock":
                 if not jarvis.unlock_failures.allowed(client):
                     return self._json(429, {"error": "Too many wrong passphrases. Try again in 15 minutes."})
@@ -462,7 +474,7 @@ def make_handler(hub: EventHub, auth: WebAuth | None = None, jarvis: Jarvis | No
 def serve(events_dir: Path, host: str, port: int, auth: WebAuth, jarvis: Jarvis | None = None) -> ThreadingHTTPServer:
     hub = EventHub(events_dir)
     threading.Thread(target=hub.run_tailer, daemon=True).start()
-    jarvis = jarvis or Jarvis.from_env(public=auth.enabled)
+    jarvis = jarvis or Jarvis.from_env(public=auth.enabled, store=events_dir / "jarvis_owner.json")
     server = ThreadingHTTPServer((host, port), make_handler(hub, auth, jarvis))
     server.daemon_threads = True
     mode = "password login on" if auth.enabled else "no login (local only)"
