@@ -12,6 +12,10 @@ practice by default) it reads its own journal and asks three questions about its
    against, it exits sooner when that happens.
 
 When its record is good and its bar is high, it relaxes a little so it keeps trading and keeps learning.
+
+**Every change goes on trial** (the "check your own work" step of Claude's agent loop). A review that changes
+the rules remembers the old rules and the win rate they had. At the next review the agent checks: if its win
+rate fell by more than `TRIAL_MARGIN`, the change is undone and it says so; otherwise the change is kept.
 Every change is written down as a lesson in the agent's own workspace, so the 3D page and JARVIS can show
 what each agent learned. No two agents end up with the same rules: each learns from its own trades only.
 
@@ -29,6 +33,7 @@ TREND_VIEW_NEED = 0.3
 MAX_MIN_EDGE = 0.6
 HOLD_AGREE = 0.25  # an open trade rides through signal wobbles while the view backs it at least this much
 COPY_SHARE = 0.2  # the bottom 20% copy the top 20%
+TRIAL_MARGIN = 0.05  # a rule change is undone when the next review's win rate is this much worse
 
 
 def starting_rules(department: str = "") -> dict:
@@ -53,6 +58,21 @@ def review(agent, period: int) -> list[str]:
         return []
     rules = agent.rules
     lessons = []
+    rate = _win_rate(trades)
+
+    # 0. Check the last change: keep it if it didn't hurt, undo it if it did.
+    trial = getattr(agent, "trial", None)
+    agent.trial = None
+    if trial is not None:
+        if rate < trial["rate"] - TRIAL_MARGIN:
+            agent.rules = rules = dict(trial["rules"])
+            agent.workspace["undone"] = agent.workspace.get("undone", 0) + 1
+            lessons.append(f"Review {trial['period']}'s change made it worse (won {trial['rate']:.0%}, then "
+                           f"{rate:.0%}): undone.")
+        else:
+            agent.workspace["kept"] = agent.workspace.get("kept", 0) + 1
+    before = dict(rules)
+    undid = bool(lessons)
 
     # 1. Fighting the reading room.
     against = [t for t in trades if t.get("agree", 0.0) <= 0]
@@ -83,11 +103,15 @@ def review(agent, period: int) -> list[str]:
                        f"against.")
 
     # Doing well with a high bar: relax a little so it keeps trading and learning.
-    rate = _win_rate(trades)
     if not lessons and rate is not None and rate >= 0.6 and rules["view_need"] > 0:
         rules["view_need"] = round(rules["view_need"] - STEP / 2, 3)
         lessons.append(f"Won {rate:.0%}: relax the bar a little (now {rules['view_need']:+.2f}).")
 
+    if undid:
+        lessons = lessons[:1]  # just undone: give the old rules a fair run before changing them again
+        agent.rules = before
+    elif rules != before:
+        agent.trial = {"rules": before, "rate": rate, "period": period}
     if lessons:
         notes = agent.workspace.setdefault("lessons", [])
         notes.extend(f"Review {period}: {x}" for x in lessons)
@@ -116,6 +140,7 @@ def share_best(agents) -> dict[str, int]:
         for i, weak in enumerate(ranked[-n:]):
             best = ranked[i % n]
             weak.rules = dict(best.rules)
+            weak.trial = None
             weak.brain.weight = max(weak.brain.weight, best.brain.weight)
             notes = weak.workspace.setdefault("lessons", [])
             notes.append(f"Copied {best.agent_id}'s rules (one of the department's best).")

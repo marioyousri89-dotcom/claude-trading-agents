@@ -2,12 +2,13 @@
 
 from collections import defaultdict, deque
 
-from . import academy, review
+from . import academy, coach as coaching, hooks, review
 
 from .agents import REVERSION, Agent, Trader
 from .brains import BrainAlpha, BrainBeta
 from .broker import PaperBroker
 from .events import EventLog
+from .managers import Managers
 from .org import manager_reports, summarize
 from .risk import RiskManager
 
@@ -22,7 +23,7 @@ MIN_PRACTICE_TRADES = 20  # every strategy trader makes at least this many pract
 class Desk:
     def __init__(self, agents: list[Agent], broker: PaperBroker, risk: RiskManager, log: EventLog,
                  beta: BrainBeta | None = None, alpha: BrainAlpha | None = None, hour_ticks: int | None = None,
-                 room=None, reviews: bool = True):
+                 room=None, reviews: bool = True, coach=None):
         self.agents = agents
         self.broker = broker
         self.risk = risk
@@ -48,6 +49,14 @@ class Desk:
         # ... and once a practice day the weakest copy the best.
         self.days = 0
         self.last_share: dict | None = None
+        # What Claude's agent program adds (see README "Built like Claude's agent program"):
+        self.journal = hooks.DeskJournal()  # the desk's own closed trades per symbol
+        self.managers = Managers()  # Atlas, Sage and Sentinel act once an hour
+        self.coach = coach  # the Claude coach (trading/coach.py), or None
+        self.last_coach: dict | None = None
+        self.checks = {"blocked": 0, "shrunk": 0}  # pre-order checks (trading/hooks.py)
+        self.hour_start = 0
+        self.hour_stats: dict[str, dict] = {}
 
     def step(self, prices: dict[str, float], headlines: list[dict] | None = None) -> None:
         self.ticks += 1
@@ -76,8 +85,8 @@ class Desk:
                 agent.news_view = self.news_view.get(agent.symbol)
                 agent.view = views.get(agent.symbol)
             vote = agent.observe(prices[agent.symbol])
-            if vote is None:
-                continue
+            if vote is None or agent.agent_id in self.managers.benched:
+                continue  # benched by its manager: it keeps practising, but its vote doesn't count this hour
             agent_votes[agent.agent_id] = vote.value
             if isinstance(agent, Trader):
                 votes[agent.symbol]["reversion" if agent.style == REVERSION else "trend"].append(vote.value)
@@ -100,6 +109,16 @@ class Desk:
             desired = target_value / prices[symbol] - self.broker.position(symbol)
             if abs(desired * prices[symbol]) < 100:  # ignore tiny rebalances
                 continue
+            check = hooks.OrderCheck(symbol, desired, self.broker.position(symbol), prices[symbol],
+                                     view=views.get(symbol), paused=symbol in self.managers.paused,
+                                     streak=self.journal.streak(symbol))
+            desired, notes = hooks.run_hooks(check)
+            if notes:
+                self.checks["blocked" if abs(desired * prices[symbol]) < 100 else "shrunk"] += 1
+                self.log.emit("check", symbol=symbol, wanted=round(check.qty, 4), allowed=round(desired, 4),
+                              notes=notes)
+            if abs(desired * prices[symbol]) < 100:
+                continue
             qty, reason = self.risk.approve(symbol, desired, prices)
             if reason:
                 self.log.emit("risk", symbol=symbol, wanted=round(desired, 4), allowed=round(qty, 4), reason=reason)
@@ -109,10 +128,20 @@ class Desk:
                     self.log.emit("jev", symbol=symbol, decision="rejected", codes=[decision.code], legs=1)
                     continue
             if qty:
+                before = self.broker.position(symbol)
                 self.broker.fill(symbol, qty, prices[symbol])
+                self.journal.fill(symbol, before, qty, prices[symbol], self.ticks)
                 orders += 1
                 self.log.emit("order", symbol=symbol, qty=round(qty, 4), price=round(prices[symbol], 4),
-                              score=round(score, 3))
+                              score=round(score, 3), why=hooks.why(votes[symbol], views.get(symbol), exposure),
+                              checks=notes)
+
+        advice = self.coach.take_advice() if self.coach else None
+        if advice:
+            changed = coaching.apply(self.agents, advice)
+            self.last_coach = {"hour": self.hours, "summary": str(advice.get("summary", ""))[:300],
+                               "changed": changed}
+            self.log.emit("coach", tick=self.ticks, **self.last_coach)
 
         if self.alpha and self.alpha.due():
             weights = self.alpha.learn(self.style_pnl())
@@ -180,21 +209,64 @@ class Desk:
             "back_in": back_in,
         }
         self.log.emit("hour", tick=self.ticks, min_trades=MIN_PRACTICE_TRADES, **self.last_hour)
+        acted = self.managers.hour(self.agents, self.journal, self.hour_start, self.hours)
+        self.log.emit("managers", tick=self.ticks, **acted)
+        if self.coach:
+            self.coach.request(self.coach_report())
+        self.hour_start = self.ticks
+        self.hour_stats = {}
+        self.checks = {"blocked": 0, "shrunk": 0}
+
+    def coach_report(self) -> dict:
+        """What the Claude coach reads once an hour: how each trading department's trades went, and why."""
+        departments = {}
+        for dept, st in self.hour_stats.items():
+            traders = [a for a in self.agents if a.role == "trader" and a.department == dept]
+            losers = st["trades"] - st["won"]
+            departments[dept] = {
+                "traders": len(traders), "closed_trades": st["trades"],
+                "win_rate": round(st["won"] / st["trades"], 3) if st["trades"] else None,
+                "losers_against_view": st["against_lost"], "losers_on_weak_signal": st["weak_lost"],
+                "avg_win_move": round(st["win_move"] / st["won"], 5) if st["won"] else None,
+                "avg_loss_move": round(st["loss_move"] / losers, 5) if losers else None,
+                "avg_rules": {k: round(sum(a.rules[k] for a in traders) / len(traders), 3)
+                              for k in coaching.FIELDS} if traders else {}}
+        return {"hour": self.hours, "departments": departments, "desk_trades": self.journal.summary(self.hour_start),
+                "order_checks": dict(self.checks), "managers": self.managers.last,
+                "your_last_advice": self.last_coach}
 
     def _review(self) -> None:
         """Every trader reviews the trades it closed since its last review and learns from its losers."""
         self.reviews += 1
         changed: dict[str, int] = defaultdict(int)
         examples: list[dict] = []
+        kept = undone = 0
         for agent in self.agents:
             if agent.role != "trader":
                 continue
+            st = self.hour_stats.setdefault(agent.department, {"trades": 0, "won": 0, "against_lost": 0,
+                                                                "weak_lost": 0, "win_move": 0.0, "loss_move": 0.0})
+            for t in agent.journal:
+                if t.get("forced"):
+                    continue
+                st["trades"] += 1
+                if t["won"]:
+                    st["won"] += 1
+                    st["win_move"] += t["move"]
+                else:
+                    st["loss_move"] += t["move"]
+                    st["against_lost"] += t.get("agree", 0.0) <= 0
+                    st["weak_lost"] += t.get("edge", 0.0) < 0.3
+            k0, u0 = agent.workspace.get("kept", 0), agent.workspace.get("undone", 0)
             lessons = review.review(agent, self.reviews)
+            kept += agent.workspace.get("kept", 0) - k0
+            undone += agent.workspace.get("undone", 0) - u0
             if lessons:
                 changed[agent.department] += 1
                 if len(examples) < 3:
                     examples.append({"agent": agent.agent_id, "lesson": lessons[0]})
-        self.last_review = {"review": self.reviews, "learned": dict(changed), "examples": examples}
+        self.last_review = {"review": self.reviews, "learned": dict(changed), "examples": examples,
+                            "changes_kept": kept, "changes_undone": undone}
         self.log.emit("review", tick=self.ticks, **self.last_review)
 
     def practice_status(self) -> dict | None:
@@ -202,7 +274,10 @@ class Desk:
             return None
         return {"hour": self.hours + 1, "ticks_into_hour": self.ticks % self.hour_ticks, "hour_ticks": self.hour_ticks,
                 "min_trades": MIN_PRACTICE_TRADES, "last_hour": self.last_hour,
-                "review_ticks": self.review_ticks, "last_review": self.last_review, "last_share": self.last_share}
+                "review_ticks": self.review_ticks, "last_review": self.last_review, "last_share": self.last_share,
+                "managers": self.managers.last, "coach": self.last_coach,
+                "coach_status": self.coach.status() if self.coach else {"claude": False},
+                "checks": dict(self.checks), "desk_trades": self.journal.closed}
 
     def _score(self, v: dict) -> float:
         trend = sum(v["trend"]) / len(v["trend"]) if v["trend"] else 0.0
