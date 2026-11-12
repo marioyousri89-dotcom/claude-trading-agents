@@ -10,6 +10,12 @@ services:
     autoDeploy: true
     dockerCommand: python -m trading.cloud
     healthCheckPath: /health
+    # A permanent disk for /events: the agents' memory (what they learned), JARVIS's passphrase and the live
+    # logs survive every update and restart. About $0.25 a month for 1 GB.
+    disk:
+      name: events
+      mountPath: /events
+      sizeGB: 1
     envVars:
       - key: DASHBOARD_PASSWORD
         generateValue: true

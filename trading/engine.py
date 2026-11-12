@@ -74,6 +74,8 @@ def resize(desk: Desk, agent_count: int, symbols: list[str], shard_id: int, shar
 def _save(desk: Desk, path: Path, log: EventLog) -> None:
     try:
         memory.save(desk, path)
+        if desk.memory is not None:
+            desk.memory["saved_tick"] = desk.ticks
     except OSError as e:  # a full or read-only disk must not stop the desk
         log.emit("memory", saved=False, error=str(e)[:200])
 
@@ -109,6 +111,7 @@ def run(env=os.environ, stream=None) -> Desk:
     memory_path = (Path(memory_dir) / f"memory-{shard_id}.json"
                    if memory_dir and env.get("MEMORY", "on").lower() not in ("off", "0", "false", "no") else None)
     remembered = memory.restore(desk, memory_path) if memory_path else 0
+    desk.memory = {"remembered": remembered, "saved_tick": None, "on": memory_path is not None}
     # Every shard sees the same market (same seed), but trades its own agents.
     live = live_market
     if live:

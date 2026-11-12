@@ -95,10 +95,29 @@ def build_children(env: dict) -> list[Child]:
     return children
 
 
+def writable_dir(path: Path, fallback: Path = Path("/tmp/events")) -> Path:
+    """The events folder, or a fallback when it can't be written (e.g. a host disk owned by another user).
+
+    The folder holds the live logs, the agents' memory and JARVIS's passphrase. On Render it is a permanent
+    disk (render.yaml), so all three survive updates; the fallback keeps the app running if it isn't.
+    """
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        probe = path / ".write-test"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink()
+        return path
+    except OSError as e:
+        print(f"events folder {path} is not writable ({e}); using {fallback}: memory won't survive updates",
+              file=sys.stderr, flush=True)
+        fallback.mkdir(parents=True, exist_ok=True)
+        return fallback
+
+
 def main() -> None:
     env = dict(os.environ)
-    events_dir = Path(env.setdefault("EVENTS_DIR", "/events"))
-    events_dir.mkdir(parents=True, exist_ok=True)
+    events_dir = writable_dir(Path(env.setdefault("EVENTS_DIR", "/events")))
+    env["EVENTS_DIR"] = str(events_dir)
     host = env.get("DASHBOARD_HOST", "0.0.0.0")
     port = int(env.get("PORT") or env.get("DASHBOARD_PORT") or 8080)
     auth = WebAuth.from_env(host, env)  # fails closed before anything starts

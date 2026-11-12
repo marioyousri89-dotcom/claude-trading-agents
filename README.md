@@ -139,6 +139,18 @@ a reason for every action) and added what was missing:
 | A reason for every action | Every `order` event carries `why` (what each department voted, the news, the chart, the risk size) and the checks that changed it. The desk also keeps its own trade record per symbol. |
 | Claude reviewing results | `trading/coach.py`: once an hour Claude reads how each trading department's trades went (losers against the view, losers on weak signals, loss vs win size, losing symbols, what the managers did, its own last advice) and makes small bounded rule changes with a reason. On only with `ANTHROPIC_API_KEY` (`COACH=off` to disable). |
 
+**Second round of upgrades:**
+- **Permanent disk** (`render.yaml`): `/events` is a 1 GB Render disk (about $0.25 a month), so the agents'
+  memory, JARVIS's passphrase and the logs survive every update. If the folder isn't writable the app falls back
+  to `/tmp/events` and keeps running (`cloud.writable_dir`).
+- **The coach is a real agent loop**: it gets the hour's summary, then uses tools (`symbol_trades`, `traders`,
+  `views`) to look into what it wants before it calls `give_advice` (at most 6 rounds an hour).
+- **The coach's advice is on trial**: a department whose win rate falls more than 5 points the hour after the
+  advice gets the change undone, and the coach is told in its next report.
+- **On screen**: the 3D page has an "Agent program" card (memory, kept/undone review changes, order checks,
+  what the managers did, the coach's summary and trial). JARVIS can answer "what does the coach say?" or
+  "do they remember?".
+
 Measured on the simulated market (400 agents, 7,200 ticks, seeds 1 to 3, built-in readers, no Claude): trader
 win rate 53.2% → 54.2%, desk profit about the same (−0.7%). A full block on Sentinel's losing symbols was
 tried first and cost about 6% of profit, so it halves size instead. Memory and the coach can't show up in one
