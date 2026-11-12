@@ -17,8 +17,12 @@ services:
         generateValue: true
       - key: EVENTS_DIR
         value: /events
+      # Paper trading on live prices (Coinbase, Yahoo). Orders still go to the paper broker; real money stays
+      # locked. Set to "sim" to go back to the simulated practice market.
+      - key: MARKET
+        value: live
       # JARVIS: set these in the Render dashboard (Environment tab). They are never in the repo.
       - key: JARVIS_PASSPHRASE   # optional fixed passphrase; otherwise you choose it on first visit to /jarvis
         sync: false
-      - key: ANTHROPIC_API_KEY   # optional: gives JARVIS a Claude brain; without it she uses her handbook
+      - key: ANTHROPIC_API_KEY   # optional: gives JARVIS and the reading room (news + chart reads) a Claude brain
         sync: false

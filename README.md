@@ -90,6 +90,48 @@ What the training changes at work:
   and their bullish or bearish read tilts the desk's call. The wire hints at where the simulated market is
   leaning, and is right about 70% of the time.
 
+**The reading room: Claude reads the news and the charts** (`trading/reading_room.py`). One shared read of every
+symbol, which every trader checks before a trade:
+- **News:** each headline's *text* is read for which way it pushes the stock. With `ANTHROPIC_API_KEY` set,
+  Claude (`claude-opus-5-5`) reads every new headline wording and gives a direction, strength and reason; each
+  wording is read once and remembered. Without a key, a finance lexicon reads the words (hot inflation is
+  bearish, a trade deal bullish).
+- **Charts:** the price history is read on two time frames (20 and 60 bars). With a key, Claude also reads a
+  compact chart of every symbol every 15 minutes (trend, support, resistance, pattern) and is blended in.
+- Claude runs on a background thread, so ticks never wait on it. `READING_ROOM_CLAUDE=off` keeps Claude out;
+  `READING_ROOM=off` turns the whole room and the filter off.
+
+**The confirmation filter.** A trader opens a trade only when its own signal, the news and the chart agree. It
+lets a trade ride through signal wobbles while the news and chart still back it, and gets out when they turn
+clearly against it.
+
+**Every trader reviews its own trades every 15 minutes** (`trading/review.py`). It reads its own journal of closed
+trades and asks: did I lose fighting the news and chart, on weak signals, or by holding on after they turned?
+Each answer tightens its own rules and is written as a lesson in its workspace. **Once a day** the weakest 20% of
+each department copy the rules and trust of its best 20%, then keep learning on their own.
+
+**Win rate now means trades won.** Each trader counts its closed trades won and lost; the 3D page shows "trades
+won" per department. (The older "right" figure is the brain's per-tick score and counts flat ticks as misses.)
+
+Practice runs, 2,400 ticks, 1,400 agents, three seeds, before vs after:
+
+| Seed | Trend win rate | Trend P&L | Reversion win rate | Reversion P&L | Desk P&L |
+|---|---|---|---|---|---|
+| 42 | 42.5% → 52.0% | $101k → $110k | 52.7% → 57.7% | −$5.4k → +$4.9k | $274k → $297k |
+| 7 | 42.5% → 53.3% | $179k → $194k | 51.8% → 57.0% | −$7.5k → +$8.9k | $279k → $309k |
+| 99 | 43.2% → 53.5% | $204k → $211k | 50.2% → 58.5% | −$9.4k → +$14.1k | $333k → $346k |
+
+Almost all of the gain comes from the reading room and the filter; the 15-minute reviews add a little on top in
+these short runs. Win rate trades off against profit: requiring stronger agreement lifts Trend to about 56% but
+earns less, so the default (`review.TREND_VIEW_NEED = 0.3`) keeps profit. These runs use the built-in readers;
+Claude's reads need a key and were not part of the measurement.
+
+**Paper trading on live prices.** `MARKET=live` swaps the simulated market for real prices (Coinbase for BTC
+and ETH, Yahoo Finance for stocks), polled every 15 s (`LIVE_POLL_SECONDS`). Orders still go to the paper broker;
+real money stays locked. The cloud app runs live by default (`render.yaml`); set `MARKET=sim` to go back.
+The simulated news wire is off on live prices (it hints at the simulator's hidden drift), so live views come
+from the charts until a real news feed is added.
+
 **Training never stops (practice hours).** Every practice hour (3,600 s of ticks, `PRACTICE_HOUR_TICKS`):
 - **Every strategy trader (Trend and Reversion) makes at least 20 practice trades.** The desk keeps each trader
   on pace; one that falls behind takes its signal instead of holding, and a benched trader keeps practising

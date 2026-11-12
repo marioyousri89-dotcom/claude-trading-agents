@@ -16,7 +16,7 @@ import statistics
 from collections import deque
 from dataclasses import dataclass
 
-from . import academy, masters
+from . import academy, masters, review
 from .brain import AgentBrain
 from .org import department_sizes
 
@@ -51,9 +51,14 @@ class Agent:
         self.training: academy.Training | None = None  # set by academy.enroll
         self.macro_view: float | None = None  # analysts: what the news says, -1 bearish .. 1 bullish
         self.news_view: float | None = None  # traders: the desk's latest news read for the symbol (Druckenmiller)
+        self.view = None  # traders: the reading room's view of the symbol (news + chart), set by the desk
+        # The agent's own rules, learned from its own mistakes at every 15-minute review (trading/review.py).
+        self.rules = review.starting_rules()  # build_team sets the department's own starting rules
+        self.journal: list[dict] = []  # trades closed since the last review
         # The agent's own space: nothing else writes here.
         self.workspace = {"votes_cast": 0, "sat_out": 0, "held": 0, "last_signal": None, "last_vote": None,
-                          "trades_this_hour": 0, "trades_total": 0}
+                          "trades_this_hour": 0, "trades_total": 0, "trade_wins": 0, "trade_losses": 0,
+                          "reviews": 0, "lessons": []}
         self.must_practice = False  # set by the desk when the agent is behind its practice-trade quota
 
     def observe(self, price: float) -> Vote | None:
@@ -88,6 +93,9 @@ class Agent:
         elif self.role == "risk":
             value = masters.advise_risk(self, value)
             self.workspace["last_vote"] = value
+        if self.role == "trader" and not self.must_practice:
+            value = self._confirm(value, signal)
+            self.workspace["last_vote"] = value
         if self.role == "trader" and self.must_practice:
             value = self._practice(value)
             self.workspace["last_vote"] = value
@@ -96,21 +104,76 @@ class Agent:
             self._trade(value)
         return Vote(self.agent_id, self.role, self.symbol, value)
 
+    def _agreement(self, direction: float) -> float:
+        """How much the reading room's view (news + chart) agrees with a trade in `direction`, -1..1."""
+        if self.view is None or not direction:
+            return 0.0
+        return self.view.direction * (1.0 if direction > 0 else -1.0)
+
+    def _confirm(self, value: float, signal: float) -> float:
+        """The confirmation filter: no new exposure unless news, chart and the agent's own signal agree.
+
+        The bar is the agent's own: its 15-minute reviews raise it after losses it could have avoided.
+        An open position that the view now clearly opposes is closed.
+        """
+        if self.view is None:
+            return value  # no reading room (READING_ROOM=off): nothing to confirm with
+        d = 1.0 if value > 0 else -1.0 if value < 0 else 0.0
+        held = 1.0 if self.position > 0 else -1.0 if self.position < 0 else 0.0
+        if held and self._agreement(held) <= -self.rules["exit_against"]:
+            self._held()
+            return 0.0  # the news and the chart have turned against the open trade: get out
+        if held and d != held and self._agreement(held) >= max(review.HOLD_AGREE, self.rules["view_need"]):
+            # Let a winner run: the signal wobbled, but the news and the chart still back the open trade.
+            self.workspace["rode"] = self.workspace.get("rode", 0) + 1
+            return self.position
+        if not d or (d == held and abs(value) <= abs(self.position)):
+            return value  # no new exposure: closing, trimming or holding needs no confirmation
+        if abs(signal) < self.rules["min_edge"] or self._agreement(d) < self.rules["view_need"]:
+            self._held()
+            return self.position if d == held else 0.0
+        return value
+
+    def _held(self) -> None:
+        self.workspace["held"] += 1
+        self.workspace["confirm_blocked"] = self.workspace.get("confirm_blocked", 0) + 1
+
     def _practice(self, value: float) -> float:
         """Behind on its practice quota: make sure this tick is a trade (enter, flip or take profit)."""
-        if abs(value - self.position) >= TRADE_STEP:
+        if abs(value - self.position) >= TRADE_STEP and (not value or self._agreement(value) >= 0):
             return value
         if self.position:
             return 0.0  # close the open practice position
-        return 1.0 if value >= 0 else -1.0  # open a new one in the signal's direction
+        # Open a new one the way the reading room leans; the agent's own signal breaks a tie.
+        lean = self.view.direction if self.view is not None and self.view.direction else value
+        return 1.0 if lean >= 0 else -1.0
 
     def _trade(self, position: float) -> None:
         if abs(position - self.position) >= TRADE_STEP:
             self.workspace["trades_this_hour"] += 1
             self.workspace["trades_total"] += 1
-        if position and (not self.position or (position > 0) != (self.position > 0)):
+        opened = position and (not self.position or (position > 0) != (self.position > 0))
+        if self.position and (not position or opened):
+            self._close_trade()
+        if opened:
             self.workspace["entry"] = self.prices[-1]  # a new position: remember where it started (Seykota's R)
+            signal = self.workspace.get("last_signal") or 0.0
+            self.workspace["entry_note"] = {"edge": abs(signal), "agree": self._agreement(position),
+                                            "forced": self.must_practice}
         self.position = position
+
+    def _close_trade(self) -> None:
+        """Write the closed trade in the agent's journal, for its next review."""
+        entry = self.workspace.get("entry")
+        if not entry:
+            return
+        side = 1.0 if self.position > 0 else -1.0
+        move = side * (self.prices[-1] / entry - 1)
+        won = move > 0
+        self.workspace["trade_wins" if won else "trade_losses"] += move != 0
+        self.journal.append({"won": won, "move": move, **self.workspace.get("entry_note", {})})
+        if len(self.journal) > review.JOURNAL_MAX:
+            del self.journal[0]
 
     def hear(self, headline: dict) -> None:
         """Read a news headline with what the agent learned at the academy (analysts only)."""
@@ -241,6 +304,7 @@ def build_team(count: int, symbols: list[str], seed: int = 0) -> list[Agent]:
         for i in range(sizes[department]):
             agent = make(i, symbols[i % len(symbols)])
             agent.department = department
+            agent.rules = review.starting_rules(department)
             members.append(agent)
         return members
 
