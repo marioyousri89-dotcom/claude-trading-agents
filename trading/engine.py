@@ -21,6 +21,10 @@ Configured with environment variables so the same image runs as any shard:
   REVIEWS       "off" stops the traders' 15-minute self-reviews and the daily copy-the-best step (default on)
   MARKET        "sim" (default) or "live": live trades real prices (Coinbase, Yahoo) with paper money
   LIVE_POLL_SECONDS  how often live prices are fetched (default 15)
+  MEMORY        "off" stops saving and restoring what the agents learned (default on when EVENTS_DIR or
+                MEMORY_DIR is set). Saved to MEMORY_DIR (default EVENTS_DIR)/memory-<shard>.json.
+  COACH         "off" keeps the hourly Claude coach off even with ANTHROPIC_API_KEY set
+  COACH_MODEL   Claude model for the coach (default claude-opus-5-5)
   MODE          only "paper" is implemented
 """
 
@@ -30,7 +34,8 @@ import sys
 import time
 from pathlib import Path
 
-from . import academy
+from . import academy, memory
+from .coach import make_coach
 from . import config as ats_config
 from . import control
 from .agents import build_team
@@ -66,6 +71,13 @@ def resize(desk: Desk, agent_count: int, symbols: list[str], shard_id: int, shar
     return len(desk.agents)
 
 
+def _save(desk: Desk, path: Path, log: EventLog) -> None:
+    try:
+        memory.save(desk, path)
+    except OSError as e:  # a full or read-only disk must not stop the desk
+        log.emit("memory", saved=False, error=str(e)[:200])
+
+
 def run(env=os.environ, stream=None) -> Desk:
     from .ring import require_paper
 
@@ -92,7 +104,11 @@ def run(env=os.environ, stream=None) -> Desk:
     hour_ticks = int(env.get("PRACTICE_HOUR_TICKS") or (round(3600 / tick_seconds) if tick_seconds else 7200))
     room = ReadingRoom(symbols, claude=make_reader(env)) if env.get("READING_ROOM", "on") != "off" else None
     desk = Desk(agents, broker, RiskManager(limits, broker), log, beta=BrainBeta(cfg), alpha=alpha,
-                hour_ticks=hour_ticks, room=room, reviews=env.get("REVIEWS", "on") != "off")
+                hour_ticks=hour_ticks, room=room, reviews=env.get("REVIEWS", "on") != "off", coach=make_coach(env))
+    memory_dir = env.get("MEMORY_DIR") or events_dir
+    memory_path = (Path(memory_dir) / f"memory-{shard_id}.json"
+                   if memory_dir and env.get("MEMORY", "on").lower() not in ("off", "0", "false", "no") else None)
+    remembered = memory.restore(desk, memory_path) if memory_path else 0
     # Every shard sees the same market (same seed), but trades its own agents.
     live = live_market
     if live:
@@ -110,7 +126,8 @@ def run(env=os.environ, stream=None) -> Desk:
     log.emit("start", agents=len(agents), total_agents=agent_count, shard_count=shard_count,
              roles=roles, departments=departments, symbols=symbols, mode="paper",
              market="live" if live else "simulated", config_version=cfg.version,
-             learning_interval_seconds=alpha.interval, school=academy.summarize(agents))
+             learning_interval_seconds=alpha.interval, school=academy.summarize(agents),
+             remembered=remembered, coach=desk.coach is not None)
 
     stopping = False
 
@@ -133,10 +150,14 @@ def run(env=os.environ, stream=None) -> Desk:
             if live and desk.ticks % 20 == 0:
                 log.emit("market", **market.status())
             desk.step(prices, news.tick(market.drift, desk.ticks + 1) if news else [])
+            if memory_path and desk.ticks % memory.SAVE_EVERY == 0:
+                _save(desk, memory_path, log)
             if tick_seconds:
                 time.sleep(tick_seconds)
     except KeyboardInterrupt:
         pass
+    if memory_path:
+        _save(desk, memory_path, log)
     log.emit("stop", ticks=desk.ticks, equity=round(broker.equity(market.prices), 2))
     log.close()
     return desk

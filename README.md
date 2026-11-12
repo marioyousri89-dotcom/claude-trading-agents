@@ -126,6 +126,24 @@ these short runs. Win rate trades off against profit: requiring stronger agreeme
 earns less, so the default (`review.TREND_VIEW_NEED = 0.3`) keeps profit. These runs use the built-in readers;
 Claude's reads need a key and were not part of the measurement.
 
+**Built like Claude's agent program.** We compared the team with Anthropic's Claude Agent SDK (the agent loop
+gather → act → check your work, long-term memory, a lead agent that directs helpers, hooks before every action,
+a reason for every action) and added what was missing:
+
+| Claude's agent program | What we added |
+|---|---|
+| Memory that outlives a session | `trading/memory.py`: every shard saves each agent's brain, rules, rule changes on trial, lessons and trade record to `memory-<shard>.json` every 5 minutes and on stop, and restores them on start. A restarted shard keeps what it learned. (`MEMORY=off` to disable.) |
+| Check your own work | `trading/review.py`: every rule change a 15-minute review makes goes on trial. If the next review's win rate is more than 5 points worse, the change is undone and the agent writes down why. |
+| A lead agent that directs its helpers | `trading/managers.py`: once an hour **Atlas** benches traders that won under 35% of their trades that hour, **Sage** benches analysts whose calls are mostly wrong, **Sentinel** cuts losing symbols to half size. Benched agents keep practising; no manager benches more than 20% of a department. |
+| Hooks before every action | `trading/hooks.py`: every order is checked before risk sees it: no new risk against a confident news-and-chart view, half size after two losing desk trades in a row in that symbol, half size in a symbol Sentinel flagged. Getting out is never blocked. |
+| A reason for every action | Every `order` event carries `why` (what each department voted, the news, the chart, the risk size) and the checks that changed it. The desk also keeps its own trade record per symbol. |
+| Claude reviewing results | `trading/coach.py`: once an hour Claude reads how each trading department's trades went (losers against the view, losers on weak signals, loss vs win size, losing symbols, what the managers did, its own last advice) and makes small bounded rule changes with a reason. On only with `ANTHROPIC_API_KEY` (`COACH=off` to disable). |
+
+Measured on the simulated market (400 agents, 7,200 ticks, seeds 1 to 3, built-in readers, no Claude): trader
+win rate 53.2% → 54.2%, desk profit about the same (−0.7%). A full block on Sentinel's losing symbols was
+tried first and cost about 6% of profit, so it halves size instead. Memory and the coach can't show up in one
+short run: memory pays off across restarts, the coach needs an API key.
+
 **Paper trading on live prices.** `MARKET=live` swaps the simulated market for real prices (Coinbase for BTC
 and ETH, Yahoo Finance for stocks), polled every 15 s (`LIVE_POLL_SECONDS`). Orders still go to the paper broker;
 real money stays locked. The cloud app runs live by default (`render.yaml`); set `MARKET=sim` to go back.

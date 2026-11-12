@@ -55,6 +55,7 @@ class Agent:
         # The agent's own rules, learned from its own mistakes at every 15-minute review (trading/review.py).
         self.rules = review.starting_rules()  # build_team sets the department's own starting rules
         self.journal: list[dict] = []  # trades closed since the last review
+        self.trial: dict | None = None  # the last review's rule change, checked at the next review
         # The agent's own space: nothing else writes here.
         self.workspace = {"votes_cast": 0, "sat_out": 0, "held": 0, "last_signal": None, "last_vote": None,
                           "trades_this_hour": 0, "trades_total": 0, "trade_wins": 0, "trade_losses": 0,
