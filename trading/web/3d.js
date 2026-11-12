@@ -94,7 +94,16 @@ function renderSchool(org){
  document.getElementById('news').innerHTML=news.length?news.map(n=>
   `<div class="row"><span>${esc(n.text)}</span><span class="right mut">${esc(n.kind)} · t${n.tick}</span></div>`).join(''):'no headlines yet'}
 function fmt(v){return v===null||v===undefined?'–':v.toFixed(2)}
-function renderOrg(org){let agents=0,active=0;renderSchool(org);
+function renderProgram(org){const p=org.practice||{};const rows=[];
+ const m=p.memory;rows.push(['Memory',!m||!m.on?'off':`${m.remembered} agents remembered at start`+(m.saved_tick!=null?` · saved at tick ${m.saved_tick}`:'')]);
+ const r=p.last_review;if(r)rows.push(['Self-checks',`review ${r.review}: ${r.changes_kept||0} changes kept, ${r.changes_undone||0} undone`]);
+ const c=p.checks;if(c)rows.push(['Order checks',`this hour: ${c.blocked} blocked, ${c.shrunk} cut in size · desk trades ${p.desk_trades||0}`]);
+ const acts=(p.managers&&p.managers.actions)||[];rows.push(['Managers acted',acts.length?acts.map(a=>`${esc(a.manager)} ${esc(a.did)}`).join(' · '):'nothing this hour']);
+ const st=p.coach_status||{};const co=p.coach;
+ rows.push(['Claude coach',!st.claude?'off (needs ANTHROPIC_API_KEY)':co?esc(co.summary||'')+(co.looked_at&&co.looked_at.length?` <span class="mut">(looked at ${co.looked_at.length} things)</span>`:'')+
+  (co.trial?' · trial: '+Object.entries(co.trial).map(([d,t])=>`${esc(d)} ${t.kept?'kept':'undone'}`).join(', '):''):`on · ${st.calls||0} calls, waiting for the first hour`]);
+ document.getElementById('program').innerHTML=rows.map(([k,v])=>`<div class="row"><span><b>${k}</b><br><span class="mut">${v}</span></span></div>`).join('')}
+function renderOrg(org){let agents=0,active=0;renderSchool(org);renderProgram(org);
  for(const [k,d] of Object.entries(org.departments)){agents+=d.agents;active+=d.active;
   if(window.THREE&&scene&&d.agents){const c=buildCluster(k,d.agents);const col=c.points.geometry.attributes.color;
    d.votes.forEach((v,i)=>{if(i<c.n)col.setXYZ(i,...color(v))});col.needsUpdate=true;

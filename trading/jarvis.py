@@ -111,6 +111,13 @@ def handbook() -> str:
         "lexicon) and chart (two time frames, plus Claude's chart read every 15 minutes) become one view. Traders "
         "only open trades the view backs. Every 15 minutes each trader reviews its own closed trades, writes "
         "lessons and tightens its own rules; once a day the weakest copy the best traders' rules.",
+        "BUILT LIKE CLAUDE'S AGENT PROGRAM: agents remember what they learned across restarts (memory files on a "
+        "permanent disk); every rule change from a review is on trial and undone if the next review is worse; "
+        "managers act hourly (Atlas benches traders who keep losing, Sage benches wrong analysts, Sentinel halves "
+        "size in losing symbols); every order passes checks first (no new risk against a confident news-and-chart "
+        "view, half size after losing streaks) and says why it was made; and with ANTHROPIC_API_KEY a Claude coach "
+        "works as an agent each hour: it looks into losing symbols and the worst traders with tools, then tunes each "
+        "department's rules, and its changes are undone if they hurt.",
         "PRACTICE HOURS: training never stops. Every hour each Trend and Reversion trader makes at least 20 practice "
         "trades, and every agent gets refresher lessons and re-sits its exams.",
         "",
@@ -217,6 +224,21 @@ class BuiltinBrain:
                 by_dept.setdefault(m.department, []).append(m.name.split(":")[0].split(" (")[0])
             parts = [f"{d.title()}: {', '.join(dict.fromkeys(names))}" for d, names in by_dept.items()]
             return f"{len(masters.MASTERS)} master courses teach the agents. " + ". ".join(parts) + "."
+        if has("coach", "memory", "remember", "agent program", "undo", "undone", "benched", "bench"):
+            p = snap.get("practice") or {}
+            mem, co, acts = p.get("memory") or {}, p.get("coach"), (p.get("managers") or {}).get("actions") or []
+            parts = [f"{mem.get('remembered', 0):,} agents remembered what they learned at start-up."
+                     if mem.get("on") else "Memory is off."]
+            r = p.get("last_review")
+            if r:
+                parts.append(f"At the last review {r.get('changes_kept', 0)} rule changes were kept and "
+                             f"{r.get('changes_undone', 0)} undone.")
+            if acts:
+                parts.append("This hour " + "; ".join(f"{x['manager']} {x['did']}" for x in acts) + ".")
+            parts.append(f"The Claude coach says: {co['summary']}" if co and co.get("summary")
+                         else "The Claude coach hasn't reported yet." if (p.get("coach_status") or {}).get("claude")
+                         else "The Claude coach is off until an Anthropic API key is set.")
+            return " ".join(parts)
         if has("academy", "train", "school", "exam", "course", "learn", "practice"):
             grads = sum(x["graduates"] for x in depts.values())
             trained = sum(x["trained"] for x in depts.values())

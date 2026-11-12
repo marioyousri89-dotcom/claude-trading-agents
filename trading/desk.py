@@ -54,6 +54,9 @@ class Desk:
         self.managers = Managers()  # Atlas, Sage and Sentinel act once an hour
         self.coach = coach  # the Claude coach (trading/coach.py), or None
         self.last_coach: dict | None = None
+        self.coach_trial: dict | None = None  # the coach's last changes, checked at the end of the next hour
+        self.last_report: dict | None = None
+        self.memory: dict | None = None  # set by the engine: {"remembered": n, "saved_tick": t}
         self.checks = {"blocked": 0, "shrunk": 0}  # pre-order checks (trading/hooks.py)
         self.hour_start = 0
         self.hour_stats: dict[str, dict] = {}
@@ -140,7 +143,10 @@ class Desk:
         if advice:
             changed = coaching.apply(self.agents, advice)
             self.last_coach = {"hour": self.hours, "summary": str(advice.get("summary", ""))[:300],
-                               "changed": changed}
+                               "changed": changed, "looked_at": advice.get("looked_at", [])[:10]}
+            # On trial: remember each department's win rate the advice is meant to beat.
+            self.coach_trial = {d: {"rate": (self.last_report or {}).get("departments", {}).get(d, {}).get(
+                "win_rate"), "changes": c["changes"]} for d, c in changed.items()}
             self.log.emit("coach", tick=self.ticks, **self.last_coach)
 
         if self.alpha and self.alpha.due():
@@ -211,11 +217,38 @@ class Desk:
         self.log.emit("hour", tick=self.ticks, min_trades=MIN_PRACTICE_TRADES, **self.last_hour)
         acted = self.managers.hour(self.agents, self.journal, self.hour_start, self.hours)
         self.log.emit("managers", tick=self.ticks, **acted)
+        report = self.coach_report()
+        trial = self.check_coach_trial(report)
+        if trial:
+            report["your_last_advice_result"] = trial
+            self.log.emit("coach_trial", tick=self.ticks, results=trial)
+        self.last_report = report
         if self.coach:
-            self.coach.request(self.coach_report())
+            self.coach.request(report, coaching.details(self))
         self.hour_start = self.ticks
         self.hour_stats = {}
         self.checks = {"blocked": 0, "shrunk": 0}
+
+    def check_coach_trial(self, report: dict) -> dict:
+        """Keep or undo the coach's last changes, department by department, by this hour's win rate."""
+        results = {}
+        for dept, t in (self.coach_trial or {}).items():
+            before, now = t["rate"], report["departments"].get(dept, {}).get("win_rate")
+            if before is None or now is None:
+                continue
+            if now < before - coaching.TRIAL_MARGIN:
+                for a in self.agents:
+                    if a.role == "trader" and a.department == dept:
+                        for rule, x in t["changes"].items():
+                            lo, hi = coaching.LIMITS[rule]
+                            a.rules[rule] = round(max(lo, min(hi, a.rules[rule] - x)), 3)
+                results[dept] = {"kept": False, "win_rate_before": before, "win_rate_after": now}
+            else:
+                results[dept] = {"kept": True, "win_rate_before": before, "win_rate_after": now}
+        self.coach_trial = None
+        if results and self.last_coach is not None:
+            self.last_coach["trial"] = results
+        return results
 
     def coach_report(self) -> dict:
         """What the Claude coach reads once an hour: how each trading department's trades went, and why."""
@@ -277,7 +310,7 @@ class Desk:
                 "review_ticks": self.review_ticks, "last_review": self.last_review, "last_share": self.last_share,
                 "managers": self.managers.last, "coach": self.last_coach,
                 "coach_status": self.coach.status() if self.coach else {"claude": False},
-                "checks": dict(self.checks), "desk_trades": self.journal.closed}
+                "checks": dict(self.checks), "desk_trades": self.journal.closed, "memory": self.memory}
 
     def _score(self, v: dict) -> float:
         trend = sum(v["trend"]) / len(v["trend"]) if v["trend"] else 0.0

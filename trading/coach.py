@@ -6,6 +6,16 @@ were won, how many of the losers were opened against the news and chart or on we
 ran bigger than winners, which symbols kept losing, and what the managers did. It also sees the advice it gave
 last hour and what happened after it, so it learns from its own calls (the agent loop: act, check, adjust).
 
+**The coach works as an agent, not a one-shot call** (the agent loop of Claude's agent program: gather context
+with tools, act, check). It gets the hour's summary, then decides for itself what to look into, using tools:
+the desk's trades in one symbol, a department's worst or best traders (their rules, lessons and records), and
+the reading room's current news-and-chart views. When it has seen enough it calls `give_advice`. It gets at
+most `MAX_TURNS` rounds of tools per hour.
+
+**Its advice goes on trial too.** The desk remembers each department's win rate when the advice was applied.
+If the next hour's win rate is more than `TRIAL_MARGIN` worse, the change is undone, and the coach is told so
+in its next report.
+
 It answers with small, bounded changes to each department's rules (how much the reading room must agree,
 the weakest signal worth trading, how fast to exit when the view turns), each with a one-line reason. Every
 trader in that department applies them, and its own reviews keep fine-tuning from there. A change can never
@@ -23,6 +33,8 @@ from . import review
 from .reading_room import DEFAULT_MODEL
 
 MAX_CHANGE = 0.1
+MAX_TURNS = 6
+TRIAL_MARGIN = 0.05
 LIMITS = {"view_need": (-0.5, review.MAX_VIEW_NEED), "min_edge": (0.0, review.MAX_MIN_EDGE),
           "exit_against": (0.15, 1.0)}
 FIELDS = {"view_need": "view_need_change", "min_edge": "min_edge_change", "exit_against": "exit_against_change"}
@@ -35,7 +47,9 @@ SYSTEM = (
     "lower = exit sooner). Diagnose why trades lost and propose small changes per department (each between "
     "-0.1 and 0.1, 0 when the rule is fine), with one short plain-English reason. Raising pickiness lifts the "
     "win rate but cuts the number of trades; don't choke a department that is winning. You also see your last "
-    "hour's advice and what happened after it: if it hurt, reverse it.")
+    "hour's advice and what happened after it: if it hurt, reverse it. Use the tools to look into what you need "
+    "(a losing symbol, a department's worst traders, the current news-and-chart views) before deciding; then "
+    "call give_advice exactly once.")
 
 SCHEMA = {"type": "object", "additionalProperties": False, "required": ["departments", "summary"], "properties": {
     "summary": {"type": "string"},
@@ -45,6 +59,50 @@ SCHEMA = {"type": "object", "additionalProperties": False, "required": ["departm
         "properties": {"department": {"type": "string"}, "view_need_change": {"type": "number"},
                        "min_edge_change": {"type": "number"}, "exit_against_change": {"type": "number"},
                        "why": {"type": "string"}}}}}}
+
+
+TOOLS = [
+    {"name": "symbol_trades", "description": "The desk's recent closed trades in one symbol (won, move) and its "
+     "current losing streak.", "input_schema": {"type": "object", "required": ["symbol"],
+                                                "properties": {"symbol": {"type": "string"}}}},
+    {"name": "traders", "description": "A department's worst or best traders this run: rules, trade record, "
+     "latest lessons.", "input_schema": {"type": "object", "required": ["department", "which"], "properties": {
+         "department": {"type": "string", "enum": ["trend", "reversion"]},
+         "which": {"type": "string", "enum": ["worst", "best"]}}}},
+    {"name": "views", "description": "The reading room's current view per symbol: direction -1..1, chart, news.",
+     "input_schema": {"type": "object", "properties": {}}},
+    {"name": "give_advice", "description": "Your final advice for this hour. Call once, when done.",
+     "input_schema": SCHEMA},
+]
+
+
+def details(desk) -> dict:
+    """A snapshot the coach's tools answer from (taken on the desk's thread, read on the coach's)."""
+    by_dept: dict[str, list] = {}
+    for a in desk.agents:
+        if a.role == "trader":
+            by_dept.setdefault(a.department, []).append(a)
+    traders = {}
+    for dept, members in by_dept.items():
+        ranked = sorted(members, key=review.trade_record)
+        def card(a):
+            w, lost = a.workspace.get("trade_wins", 0), a.workspace.get("trade_losses", 0)
+            return {"agent": a.agent_id, "symbol": a.symbol, "won": w, "lost": lost, "rules": dict(a.rules),
+                    "lessons": list(a.workspace.get("lessons", []))[-3:]}
+        traders[dept] = {"worst": [card(a) for a in ranked[:5]], "best": [card(a) for a in ranked[-5:]]}
+    return {"symbols": {s: {"trades": [dict(t) for t in list(ts)[-15:]], "streak": desk.journal.streak(s)}
+                        for s, ts in desk.journal.trades.items()},
+            "traders": traders, "views": desk.room.snapshot()["views"] if desk.room else {}}
+
+
+def run_tool(name: str, args: dict, snap: dict):
+    if name == "symbol_trades":
+        return snap["symbols"].get(str(args.get("symbol", "")).upper(), {"trades": [], "streak": 0})
+    if name == "traders":
+        return snap["traders"].get(args.get("department"), {}).get(args.get("which"), [])
+    if name == "views":
+        return snap["views"]
+    return {"error": f"unknown tool {name}"}
 
 
 def apply(agents, advice: dict) -> dict[str, dict]:
@@ -94,9 +152,9 @@ class Coach:
         self._thread = threading.Thread(target=self._run, name="claude-coach", daemon=True)
         self._thread.start()
 
-    def request(self, report: dict) -> None:
+    def request(self, report: dict, snap: dict | None = None) -> None:
         with self._lock:
-            self._job = report
+            self._job = (report, snap or {})
         self._wake.set()
 
     def take_advice(self) -> dict | None:
@@ -118,7 +176,7 @@ class Coach:
             if job is None:
                 continue
             try:
-                advice = self._ask(job)
+                advice = self._ask(*job)
             except Exception as e:  # a failed call must never stop the desk; the agents' own reviews go on
                 with self._lock:
                     self.errors += 1
@@ -128,18 +186,40 @@ class Coach:
                 self._advice = advice
                 self.last_summary = str(advice.get("summary", ""))[:300]
 
-    def _ask(self, report: dict) -> dict:
-        response = self.client.beta.messages.create(
-            model=self.model, max_tokens=4096, system=SYSTEM,
-            messages=[{"role": "user", "content": json.dumps(report)}],
-            output_config={"effort": "medium", "format": {"type": "json_schema", "schema": SCHEMA}},
-            betas=["server-side-fallback-2026-07-01"], fallbacks="default")
-        with self._lock:
-            self.calls += 1
-        if response.stop_reason == "refusal":
-            raise RuntimeError("refused")
-        text = next(b.text for b in response.content if b.type == "text")
-        return json.loads(text)
+    def _ask(self, report: dict, snap: dict | None = None) -> dict:
+        """The agent loop: Claude looks into what it wants with tools, then gives its advice."""
+        snap = snap or {}
+        messages = [{"role": "user", "content": json.dumps(report)}]
+        looked = []
+        for turn in range(MAX_TURNS):
+            response = self.client.beta.messages.create(
+                model=self.model, max_tokens=4096, system=SYSTEM, messages=messages, tools=TOOLS,
+                output_config={"effort": "medium"},
+                betas=["server-side-fallback-2026-07-01"], fallbacks="default")
+            with self._lock:
+                self.calls += 1
+            if response.stop_reason == "refusal":
+                raise RuntimeError("refused")
+            uses = [b for b in response.content if b.type == "tool_use"]
+            for b in uses:
+                if b.name == "give_advice":
+                    advice = dict(b.input)
+                    advice["looked_at"] = looked
+                    return advice
+            if not uses:
+                messages.append({"role": "assistant", "content": response.content})
+                messages.append({"role": "user", "content": "Call give_advice now."})
+                continue
+            messages.append({"role": "assistant", "content": response.content})
+            results = []
+            for b in uses:
+                looked.append({"tool": b.name, "input": b.input})
+                results.append({"type": "tool_result", "tool_use_id": b.id,
+                                "content": json.dumps(run_tool(b.name, b.input, snap))[:8000]})
+            if turn == MAX_TURNS - 2:
+                results.append({"type": "text", "text": "Last round: call give_advice now."})
+            messages.append({"role": "user", "content": results})
+        raise RuntimeError("no advice after the tool rounds")
 
 
 def make_coach(env=os.environ) -> Coach | None:

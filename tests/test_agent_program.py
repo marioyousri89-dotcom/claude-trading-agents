@@ -122,16 +122,26 @@ class MemoryTests(unittest.TestCase):
 
 
 class FakeCoachClient:
+    """Stands in for anthropic.Anthropic: looks at one symbol and the worst trend traders, then gives advice."""
+
     def __init__(self):
         self.calls = []
         self.beta = SimpleNamespace(messages=SimpleNamespace(create=self.create))
 
     def create(self, **kw):
-        self.calls.append(json.loads(kw["messages"][0]["content"]))
-        text = json.dumps({"summary": "Trend traders fought the chart.", "departments": [
-            {"department": "trend", "view_need_change": 0.5, "min_edge_change": 0.0, "exit_against_change": -0.05,
-             "why": "most losers were opened against the chart"}]})
-        return SimpleNamespace(stop_reason="end_turn", content=[SimpleNamespace(type="text", text=text)])
+        self.calls.append(kw)
+        assert {t["name"] for t in kw["tools"]} >= {"symbol_trades", "traders", "views", "give_advice"}
+        turn = len(self.calls)
+        if turn == 1:
+            blocks = [SimpleNamespace(type="tool_use", id="a", name="symbol_trades", input={"symbol": "aapl"}),
+                      SimpleNamespace(type="tool_use", id="b", name="traders",
+                                      input={"department": "trend", "which": "worst"})]
+        else:
+            blocks = [SimpleNamespace(type="tool_use", id="c", name="give_advice", input={
+                "summary": "Trend traders fought the chart.", "departments": [
+                    {"department": "trend", "view_need_change": 0.5, "min_edge_change": 0.0,
+                     "exit_against_change": -0.05, "why": "most losers were opened against the chart"}]})]
+        return SimpleNamespace(stop_reason="tool_use", content=blocks)
 
 
 class CoachTests(unittest.TestCase):
@@ -160,13 +170,30 @@ class CoachTests(unittest.TestCase):
             while not fake.calls and time.time() < deadline:
                 time.sleep(0.02)
             self.assertTrue(fake.calls)
-            self.assertIn("departments", fake.calls[0])
+            self.assertIn("departments", json.loads(fake.calls[0]["messages"][0]["content"]))
             # The answer is applied on a later tick.
             time.sleep(0.2)
             desk.step(desk.last_prices)
             self.assertIsNotNone(desk.last_coach)
+            self.assertEqual([x["tool"] for x in desk.last_coach["looked_at"]], ["symbol_trades", "traders"])
+            # The second call carried the tool results back to Claude.
+            results = fake.calls[1]["messages"][-1]["content"]
+            self.assertEqual({r["tool_use_id"] for r in results}, {"a", "b"})
         finally:
             eng.make_coach = original
+
+    def test_coach_change_that_hurt_is_undone(self):
+        from trading.desk import Desk
+        team = [trader(i, 0, 0) for i in range(3)]
+        for a in team:
+            a.rules = review.starting_rules("trend")
+        desk = SimpleNamespace(agents=team, coach_trial={"trend": {"rate": 0.6, "changes": {"view_need": 0.1}}},
+                               last_coach={})
+        for a in team:
+            a.rules["view_need"] += 0.1
+        out = Desk.check_coach_trial(desk, {"departments": {"trend": {"win_rate": 0.4}}})
+        self.assertFalse(out["trend"]["kept"])
+        self.assertAlmostEqual(team[0].rules["view_need"], review.TREND_VIEW_NEED)
 
     def test_orders_say_why(self):
         out = io.StringIO()
@@ -175,6 +202,27 @@ class CoachTests(unittest.TestCase):
         orders = [o for o in orders if "why" in o]
         self.assertTrue(orders)
         self.assertIn("trend", orders[0]["why"])
+
+
+class CloudDiskTests(unittest.TestCase):
+    def test_unwritable_events_folder_falls_back(self):
+        from trading import cloud
+        with tempfile.TemporaryDirectory() as d:
+            blocker = Path(d) / "file"
+            blocker.write_text("x")
+            got = cloud.writable_dir(blocker / "events", Path(d) / "fallback")
+            self.assertEqual(got, Path(d) / "fallback")
+            self.assertEqual(cloud.writable_dir(Path(d) / "ok"), Path(d) / "ok")
+
+
+class JarvisTests(unittest.TestCase):
+    def test_jarvis_explains_memory_and_coach(self):
+        from trading.jarvis import BuiltinBrain
+        snap = {"practice": {"memory": {"on": True, "remembered": 1400}, "coach_status": {"claude": False},
+                             "managers": {"actions": [{"manager": "Atlas", "did": "benched 12 traders for an hour"}]}}}
+        answer = BuiltinBrain().answer("what does the coach do and do they remember?", snap)
+        self.assertIn("1,400 agents remembered", answer)
+        self.assertIn("Atlas benched 12", answer)
 
 
 if __name__ == "__main__":
