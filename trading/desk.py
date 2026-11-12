@@ -2,7 +2,7 @@
 
 from collections import defaultdict, deque
 
-from . import academy
+from . import academy, review
 
 from .agents import REVERSION, Agent, Trader
 from .brains import BrainAlpha, BrainBeta
@@ -21,7 +21,8 @@ MIN_PRACTICE_TRADES = 20  # every strategy trader makes at least this many pract
 
 class Desk:
     def __init__(self, agents: list[Agent], broker: PaperBroker, risk: RiskManager, log: EventLog,
-                 beta: BrainBeta | None = None, alpha: BrainAlpha | None = None, hour_ticks: int | None = None):
+                 beta: BrainBeta | None = None, alpha: BrainAlpha | None = None, hour_ticks: int | None = None,
+                 room=None, reviews: bool = True):
         self.agents = agents
         self.broker = broker
         self.risk = risk
@@ -38,6 +39,15 @@ class Desk:
         self.hour_ticks = hour_ticks
         self.hours = 0
         self.last_hour: dict | None = None
+        # The reading room (trading/reading_room.py): one news + chart view per symbol that traders confirm with.
+        self.room = room
+        # Every trader reviews its own trades four times a practice hour (every 15 minutes) ...
+        self.review_ticks = max(1, hour_ticks // 4) if hour_ticks and reviews else None
+        self.reviews = 0
+        self.last_review: dict | None = None
+        # ... and once a practice day the weakest copy the best.
+        self.days = 0
+        self.last_share: dict | None = None
 
     def step(self, prices: dict[str, float], headlines: list[dict] | None = None) -> None:
         self.ticks += 1
@@ -46,6 +56,7 @@ class Desk:
         self.last_prices = dict(prices)
         if self.beta:
             self.beta.begin()
+        views = self.room.update(prices, headlines) if self.room else {}
         votes = defaultdict(lambda: {"trend": [], "reversion": [], "analyst": [], "risk": [], "macro": []})
         agent_votes: dict[str, float] = {}
         self._set_practice_pace()
@@ -63,6 +74,7 @@ class Desk:
                     votes[agent.symbol]["macro"].append(agent.macro_view)
             if agent.role == "trader":
                 agent.news_view = self.news_view.get(agent.symbol)
+                agent.view = views.get(agent.symbol)
             vote = agent.observe(prices[agent.symbol])
             if vote is None:
                 continue
@@ -118,12 +130,19 @@ class Desk:
             equity=round(equity, 2), pnl=round(equity - self.broker.starting_cash, 2), halted=self.risk.halted,
             prices={s: round(p, 4) for s, p in prices.items()}, **extra,
         )
+        if self.review_ticks and self.ticks % self.review_ticks == 0:
+            self._review()
         if self.hour_ticks and self.ticks % self.hour_ticks == 0:
             self._end_hour()
+            if self.review_ticks and self.hours % 24 == 0:
+                self.days += 1
+                self.last_share = {"day": self.days, "copied": review.share_best(self.agents)}
+                self.log.emit("share", tick=self.ticks, **self.last_share)
         if self.ticks % ORG_EVERY == 0 or self.ticks == 1:
             departments = summarize(self.agents, agent_votes)
             self.log.emit("org", tick=self.ticks, departments=departments, managers=manager_reports(departments),
-                          news=list(self.news), practice=self.practice_status())
+                          news=list(self.news), practice=self.practice_status(),
+                          reading_room=self.room.snapshot() if self.room else None)
         if self.ticks % LEADERBOARD_EVERY == 0:
             self.log.emit("leaderboard", tick=self.ticks, top=self.leaderboard(5))
 
@@ -162,11 +181,28 @@ class Desk:
         }
         self.log.emit("hour", tick=self.ticks, min_trades=MIN_PRACTICE_TRADES, **self.last_hour)
 
+    def _review(self) -> None:
+        """Every trader reviews the trades it closed since its last review and learns from its losers."""
+        self.reviews += 1
+        changed: dict[str, int] = defaultdict(int)
+        examples: list[dict] = []
+        for agent in self.agents:
+            if agent.role != "trader":
+                continue
+            lessons = review.review(agent, self.reviews)
+            if lessons:
+                changed[agent.department] += 1
+                if len(examples) < 3:
+                    examples.append({"agent": agent.agent_id, "lesson": lessons[0]})
+        self.last_review = {"review": self.reviews, "learned": dict(changed), "examples": examples}
+        self.log.emit("review", tick=self.ticks, **self.last_review)
+
     def practice_status(self) -> dict | None:
         if not self.hour_ticks:
             return None
         return {"hour": self.hours + 1, "ticks_into_hour": self.ticks % self.hour_ticks, "hour_ticks": self.hour_ticks,
-                "min_trades": MIN_PRACTICE_TRADES, "last_hour": self.last_hour}
+                "min_trades": MIN_PRACTICE_TRADES, "last_hour": self.last_hour,
+                "review_ticks": self.review_ticks, "last_review": self.last_review, "last_share": self.last_share}
 
     def _score(self, v: dict) -> float:
         trend = sum(v["trend"]) / len(v["trend"]) if v["trend"] else 0.0

@@ -104,6 +104,7 @@ function renderOrg(org){let agents=0,active=0;renderSchool(org);
  document.getElementById('depts').innerHTML=Object.values(org.departments).map(d=>
   `<div class="row"><span><b>${d.name}</b><br><span class="mut">${d.job}</span><br>`+
   `<span class="mut">brains: trust ${fmt(d.avg_weight)} · right ${d.skill===null?'–':(100*d.skill).toFixed(1)+'%'} · ${d.sitting_out} sitting out</span>`+
+  (d.trade_win_rate!==null&&d.trade_win_rate!==undefined?`<br><span class="mut">trades won ${(100*d.trade_win_rate).toFixed(1)}% of ${(d.trade_wins+d.trade_losses).toLocaleString()} · ${d.reviews_learned||0} learned from reviews</span>`:'')+
   (d.held?`<br><span class="mut">held ${d.held} weak calls</span>`:'')+
   (d.macro!==null&&d.macro!==undefined?`<br><span class="mut">news read ${d.macro>0?'bullish':'bearish'} (${fmt(d.macro)})</span>`:'')+`</span>`+
   `<span class="right">${d.agents} agents<br><span class="mut">avg ${fmt(d.avg_vote)}</span> · `+

@@ -120,7 +120,7 @@ class EventHub:
             self.events.append((self.seq, event))
             shard = self.shards.setdefault(str(event.get("shard", "?")), {})
             kind = event.get("type")
-            if kind in ("start", "tick", "leaderboard", "stop", "heatmap", "matrix", "org"):
+            if kind in ("start", "tick", "leaderboard", "stop", "heatmap", "matrix", "org", "market"):
                 shard[kind] = event
             if kind == "resize" and "start" in shard:
                 shard["start"] = {**shard["start"], "agents": event["agents"], "total_agents": event["total_agents"]}
@@ -152,6 +152,7 @@ class EventHub:
                           "votes": [], "vote_sum": 0.0, "weight_sum": 0.0, "wins": 0, "experience": 0, "held": 0,
                           "macro_sum": 0.0, "macro_count": 0, "traders": 0, "trades_hour_sum": 0,
                           "trades_hour_min": None, "trades_total": 0, "masters_used": {},
+                          "trade_wins": 0, "trade_losses": 0, "reviews_learned": 0,
                           "school": {"trained": 0, "graduates": 0, "exam_sum": 0.0, "course_sums": {}}}
                   for d in DEPARTMENTS}
         for report in reports:
@@ -167,7 +168,8 @@ class EventHub:
                 m["wins"] += dept.get("wins", 0)
                 m["experience"] += dept.get("experience", 0)
                 m["held"] += dept.get("held", 0)
-                for k in ("traders", "trades_hour_sum", "trades_total"):
+                for k in ("traders", "trades_hour_sum", "trades_total", "trade_wins", "trade_losses",
+                          "reviews_learned"):
                     m[k] += dept.get(k, 0)
                 if dept.get("trades_hour_min") is not None:
                     m["trades_hour_min"] = (dept["trades_hour_min"] if m["trades_hour_min"] is None
@@ -191,13 +193,15 @@ class EventHub:
             m["avg_vote"] = round(m.pop("vote_sum") / m["active"], 4) if m["active"] else None
             m["avg_weight"] = round(m.pop("weight_sum") / m["agents"], 4) if m["agents"] else None
             m["skill"] = round(m["wins"] / m["experience"], 4) if m["experience"] else None
+            closed = m["trade_wins"] + m["trade_losses"]
+            m["trade_win_rate"] = round(m["trade_wins"] / closed, 4) if closed else None
             m["pnl"] = round(m["pnl"], 2)
             finish_school(m)
         tick = max((r["tick"] for r in reports), default=0)
         latest = max(reports, key=lambda r: r["tick"], default={})
         per_department = control.read(self.events_dir)
         return {"tick": tick, "departments": merged, "managers": manager_reports(merged), "news": latest.get("news", []),
-                "practice": latest.get("practice"),
+                "practice": latest.get("practice"), "reading_room": latest.get("reading_room"),
                 "slider": {"per_department": per_department, "min": control.MIN_DEPARTMENT_SIZE,
                            "max": control.MAX_DEPARTMENT_SIZE, "departments": len(DEPARTMENTS)}}
 

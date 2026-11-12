@@ -15,6 +15,12 @@ Configured with environment variables so the same image runs as any shard:
   PRACTICE_HOUR_TICKS  ticks in one practice hour (default 3600 / TICK_SECONDS, or 7200 when TICK_SECONDS
                 is 0). Each hour every strategy trader makes at least 20 practice trades and every
                 agent takes a refresher course (the hourly upgrade).
+  READING_ROOM  "off" turns off the shared news + chart read and the traders' confirmation filter (default on)
+  READING_ROOM_CLAUDE  "off" keeps Claude out of the reading room even with ANTHROPIC_API_KEY set
+  READING_ROOM_MODEL   Claude model for the reading room (default claude-opus-5-5)
+  REVIEWS       "off" stops the traders' 15-minute self-reviews and the daily copy-the-best step (default on)
+  MARKET        "sim" (default) or "live": live trades real prices (Coinbase, Yahoo) with paper money
+  LIVE_POLL_SECONDS  how often live prices are fetched (default 15)
   MODE          only "paper" is implemented
 """
 
@@ -35,6 +41,7 @@ from .desk import Desk
 from .events import EventLog
 from .market import SimulatedMarket
 from .news import NewsWire
+from .reading_room import ReadingRoom, make_reader
 from .risk import RiskLimits, RiskManager
 
 DEFAULT_SYMBOLS = "AAPL,MSFT,NVDA,AMZN,GOOG,TSLA,META,AMD,BTC,ETH"
@@ -69,7 +76,9 @@ def run(env=os.environ, stream=None) -> Desk:
     shard_count = int(env.get("SHARD_COUNT", 1))
     symbols = [s.strip() for s in env.get("SYMBOLS", DEFAULT_SYMBOLS).split(",") if s.strip()]
     ticks = int(env.get("TICKS", 0))
-    tick_seconds = float(env.get("TICK_SECONDS", 0.5))
+    live_market = env.get("MARKET", "sim").lower() == "live"
+    # Live prices change every poll, not every half second: tick once per poll by default.
+    tick_seconds = float(env.get("TICK_SECONDS", env.get("LIVE_POLL_SECONDS", 15) if live_market else 0.5))
     seed = int(env.get("SEED", 42))
     events_dir = env.get("EVENTS_DIR")
 
@@ -81,18 +90,26 @@ def run(env=os.environ, stream=None) -> Desk:
                        cfg.beta.learning_enabled)
     limits = RiskLimits(max_drawdown=cfg.risk.max_drawdown)
     hour_ticks = int(env.get("PRACTICE_HOUR_TICKS") or (round(3600 / tick_seconds) if tick_seconds else 7200))
+    room = ReadingRoom(symbols, claude=make_reader(env)) if env.get("READING_ROOM", "on") != "off" else None
     desk = Desk(agents, broker, RiskManager(limits, broker), log, beta=BrainBeta(cfg), alpha=alpha,
-                hour_ticks=hour_ticks)
+                hour_ticks=hour_ticks, room=room, reviews=env.get("REVIEWS", "on") != "off")
     # Every shard sees the same market (same seed), but trades its own agents.
-    market = SimulatedMarket(symbols, seed=seed)
-    news = NewsWire(symbols, seed=seed)
+    live = live_market
+    if live:
+        from .live_market import LiveMarket  # real prices, paper money: orders still go to the paper broker
+        market = LiveMarket(symbols, poll_seconds=float(env.get("LIVE_POLL_SECONDS", 15)))
+        news = None  # the simulated wire hints at the simulator's hidden drift, which real prices don't have
+    else:
+        market = SimulatedMarket(symbols, seed=seed)
+        news = NewsWire(symbols, seed=seed)
 
     roles, departments = {}, {}
     for a in agents:
         roles[a.role] = roles.get(a.role, 0) + 1
         departments[a.department] = departments.get(a.department, 0) + 1
     log.emit("start", agents=len(agents), total_agents=agent_count, shard_count=shard_count,
-             roles=roles, departments=departments, symbols=symbols, mode="paper", config_version=cfg.version,
+             roles=roles, departments=departments, symbols=symbols, mode="paper",
+             market="live" if live else "simulated", config_version=cfg.version,
              learning_interval_seconds=alpha.interval, school=academy.summarize(agents))
 
     stopping = False
@@ -113,7 +130,9 @@ def run(env=os.environ, stream=None) -> Desk:
                     log.emit("resize", agents=after, was=before, total_agents=agent_count,
                              per_department=per_department)
             prices = market.tick()
-            desk.step(prices, news.tick(market.drift, desk.ticks + 1))
+            if live and desk.ticks % 20 == 0:
+                log.emit("market", **market.status())
+            desk.step(prices, news.tick(market.drift, desk.ticks + 1) if news else [])
             if tick_seconds:
                 time.sleep(tick_seconds)
     except KeyboardInterrupt:

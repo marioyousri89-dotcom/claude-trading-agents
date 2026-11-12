@@ -107,6 +107,10 @@ def handbook() -> str:
         lines.append(f"- {m.name} ({m.department}): {m.rule}. Known for: {m.known_for}.")
     lines += [
         "",
+        "READING ROOM: every symbol's news (read by Claude when ANTHROPIC_API_KEY is set, else a finance "
+        "lexicon) and chart (two time frames, plus Claude's chart read every 15 minutes) become one view. Traders "
+        "only open trades the view backs. Every 15 minutes each trader reviews its own closed trades, writes "
+        "lessons and tightens its own rules; once a day the weakest copy the best traders' rules.",
         "PRACTICE HOURS: training never stops. Every hour each Trend and Reversion trader makes at least 20 practice "
         "trades, and every agent gets refresher lessons and re-sits its exams.",
         "",
@@ -140,6 +144,7 @@ def snapshot(org: dict | None, state: dict | None) -> dict:
         school = d.get("school") or {}
         depts[key] = {"name": d.get("name"), "agents": d.get("agents", 0), "active": d.get("active", 0),
                       "sitting_out": d.get("sitting_out", 0), "pnl": d.get("pnl", 0.0), "skill": d.get("skill"),
+                      "trade_win_rate": d.get("trade_win_rate"), "learned": d.get("reviews_learned", 0),
                       "avg_trust": d.get("avg_weight"), "graduates": school.get("graduates", 0),
                       "trained": school.get("trained", 0), "exam_avg": school.get("avg_exam")}
     desk = state.get("jev_desk") or {}
@@ -190,7 +195,8 @@ class BuiltinBrain:
                 x = depts[d.key]
                 return (f"{d.name} has {x['agents']:,} agents, {x['active']:,} voting and {x['sitting_out']:,} sitting "
                         f"out. P&L {_money(x['pnl'])}, calls right {_pct(x['skill'])}, "
-                        f"{x['graduates']:,} of {x['trained']:,} graduated with an exam average of {_pct(x['exam_avg'])}.")
+                        + (f"trades won {_pct(x.get('trade_win_rate'))}, " if x.get("trade_win_rate") is not None else "")
+                        + f"{x['graduates']:,} of {x['trained']:,} graduated with an exam average of {_pct(x['exam_avg'])}.")
         for m in snap.get("managers") or []:
             if has(m["manager"].lower()):
                 return f"{m['manager']}, {m['title']}, says: {m['call']}. Training: {m['training']}. P&L {_money(m['pnl'])}."
